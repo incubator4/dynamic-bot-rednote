@@ -1,0 +1,28 @@
+---
+description: Kotlin 插件代码对齐官方 weibo/bilibili 骨架
+globs: "**/*.{kt,kts}"
+alwaysApply: false
+---
+
+# Kotlin 插件约定
+
+- 包名：`top.colter.dynamic.rednote`。
+- `RednotePublisherPlugin` 只做接口委托；业务在 `RednotePublisherRuntime` 及 Gateway / Mapper / Handler。
+- 默认构造给宿主用；测试用 internal 构造注入 fake gateway、cursor、scheduler。
+- `DynamicPayload` 用有序 `blocks`，`MediaCardBlock.style` 必须显式指定。
+- 字节码目标 Java 17；不要把 `dynamic-bot-core` 或 logging 打进 fatJar。
+- 测试覆盖 Mapper、失败处理、配置校验，以及「不得 import 宿主内部包」的边界测试。
+- 优先抄 [dynamic-bot-weibo](https://github.com/Colter23/dynamic-bot-weibo) 的同名类型，而不是重新发明分层。
+
+```kotlin
+// ❌ BAD: 插件类里写轮询
+class RednotePublisherPlugin : PublisherSourcePlugin {
+    override suspend fun onStart() { while (true) poll() }
+}
+
+// ✅ GOOD: 入口委托 Runtime
+class RednotePublisherPlugin(private val runtime: RednotePublisherRuntime) : PublisherSourcePlugin {
+    constructor() : this(RednotePublisherRuntime())
+    override suspend fun onStart() = runtime.onStart()
+}
+```

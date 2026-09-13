@@ -1,0 +1,13 @@
+---
+description: 文档与 ADR 的维护方式
+globs: "docs/**/*.md"
+alwaysApply: false
+---
+
+# 文档
+
+- `docs/` 写本仓库的产品与决策，不要整份复制 upstream README。
+- 插件 API 细节以 `dynamic-bot-core` 的 `PLUGIN_DEVELOPMENT.md` 为准；本仓库只记必须守住的子集。
+- 架构或一期范围有变：先在 `docs/decisions.md` 追加或修订 ADR（Accepted / Superseded），再改 `product.md` / `architecture.md`。
+- 提到官方插件时用仓库链接，不要臆造不存在的 core 接口或配置项。
+- 用户可见名称用「小红书」；标识符用 `rednote`。

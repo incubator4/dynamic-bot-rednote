@@ -1,0 +1,17 @@
+---
+description: 本仓库是单一的小红书来源插件产品，不是宿主或出口
+alwaysApply: true
+---
+
+# 产品边界
+
+本仓库只做 **dynamic-bot 的小红书内容来源插件**（RedNote / 小红书）。
+
+- 做一个 Kotlin fatJar，放入主程序 `plugins/`。
+- 做订阅笔记的拉取、映射、登录和（宜做）链接解析。
+- 不要做主程序、`MessageSinkPlugin`、独立 Bot、第二套投递通道。
+- 不要在本仓库里塞多个无关插件。
+
+一期范围以 `docs/product.md` 和 `docs/decisions.md` 的 ADR-0006 为准。搜索、关注、二维码、直播、视频下载未立项前不要实现。
+
+改产品范围或平台标识时，先改 `docs/decisions.md`。

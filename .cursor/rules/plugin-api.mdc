@@ -1,0 +1,29 @@
+---
+description: 只使用 dynamic-bot-core 公开 API，并按官方来源插件方式发布动态
+alwaysApply: true
+---
+
+# 插件 API
+
+权威文档：<https://github.com/Colter23/dynamic-bot-core/blob/main/PLUGIN_DEVELOPMENT.md>
+
+- 生产依赖 `compileOnly` `top.colter.dynamic:dynamic-bot-core`。不要依赖主程序内部实现。
+- 禁止 import `core.repository`、`core.table`、宿主 `repository` / `table` / `plugin` 加载器 / `event` 总线包。
+- 需要订阅或来源状态时，只用 `PluginContext.subscriptionQueryService` 和 `sourceStateStore`。
+- 动态只通过 `sourceUpdatePublisher.publish(...)` 提交。结果为 `FAILED` 时不得推进游标。
+- I/O 和轮询挂在 context 的 `CoroutineScope` / `TaskScheduler` 上。
+- 用户配置走 `ConfigService`；游标和缓存走 `PluginDataStore`。
+- 配置表单、校验错误、用户可见提示用中文。
+- `plugin.yml`：`id: rednote-publisher`，`apiVersion` 与当前 core 一致，能力靠接口推导。
+
+```kotlin
+// ❌ BAD: 自己发消息或推进游标
+messageSink.send(update)
+cursor.save(id)
+
+// ✅ GOOD: 等主程序回执
+val result = context.sourceUpdatePublisher.publish(
+    SourceUpdatePublishRequest(sourcePlugin = context.pluginId, update = update),
+)
+if (result.accepted) cursor.save(id)
+```
