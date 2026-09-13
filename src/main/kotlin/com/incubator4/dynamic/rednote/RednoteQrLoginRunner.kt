@@ -45,12 +45,14 @@ internal suspend fun runRednoteQrLogin(
                 if (verified.status == PublisherLoginStatus.SUCCESS) {
                     return verified
                 }
-                return PublisherLoginResult(
+                val failed = PublisherLoginResult(
                     status = PublisherLoginStatus.FAILED,
                     message = verified.message.ifBlank {
                         "小红书扫码登录成功，但登录态校验未通过"
                     },
                 )
+                onStatusChanged(failed)
+                return failed
             }
             RednoteQrCodeStatus.EXPIRED,
             RednoteQrCodeStatus.CANCELED,

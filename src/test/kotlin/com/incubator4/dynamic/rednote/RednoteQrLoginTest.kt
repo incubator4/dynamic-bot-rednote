@@ -126,6 +126,70 @@ class RednoteQrLoginTest {
     }
 
     @Test
+    fun `qr login runner expires when timeout elapses`() = runBlocking {
+        var clock = 0L
+        val result = runRednoteQrLogin(
+            onQrCode = {},
+            onStatusChanged = {},
+            createChallenge = {
+                RednoteQrCodeChallenge(
+                    qrId = "qr-timeout",
+                    code = "code-timeout",
+                    url = "https://www.xiaohongshu.com/mobile/login?qrId=qr-timeout",
+                    expiresAtEpochSeconds = 2_000,
+                )
+            },
+            pollStatus = { _, _ ->
+                RednoteQrStatusSnapshot(code = 0, success = true, codeStatus = 0)
+            },
+            applyLoginInfo = {},
+            verifyLogin = { error("should not verify") },
+            pollIntervalMs = 1_000,
+            timeoutMs = 2_500,
+            delayMillis = { clock += it },
+            nowMillis = { clock },
+        )
+        assertEquals(PublisherLoginStatus.EXPIRED, result.status)
+        assertTrue(result.message.contains("过期"))
+    }
+
+    @Test
+    fun `qr login runner reports failed when session verify fails`() = runBlocking {
+        val updates = mutableListOf<PublisherLoginResult>()
+        val result = runRednoteQrLogin(
+            onQrCode = {},
+            onStatusChanged = { updates += it },
+            createChallenge = {
+                RednoteQrCodeChallenge(
+                    qrId = "qr-2",
+                    code = "code-2",
+                    url = "https://www.xiaohongshu.com/mobile/login?qrId=qr-2",
+                    expiresAtEpochSeconds = 2_000,
+                )
+            },
+            pollStatus = { _, _ ->
+                RednoteQrStatusSnapshot(
+                    code = 0,
+                    success = true,
+                    codeStatus = 2,
+                    loginInfo = RednoteQrLoginInfo(session = "bad", userId = "u1"),
+                )
+            },
+            applyLoginInfo = {},
+            verifyLogin = {
+                PublisherLoginResult(PublisherLoginStatus.FAILED, "游客会话")
+            },
+            pollIntervalMs = 1_000,
+            timeoutMs = 5_000,
+            delayMillis = {},
+            nowMillis = { 0L },
+        )
+        assertEquals(PublisherLoginStatus.FAILED, result.status)
+        assertTrue(result.message.contains("游客") || result.message.contains("校验"))
+        assertTrue(updates.any { it.status == PublisherLoginStatus.FAILED })
+    }
+
+    @Test
     fun `runtime qr login persists cookie and supports qr method`() = runBlocking {
         val gateway = RecordingRednoteGateway(
             loginResult = PublisherLoginResult(

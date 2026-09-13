@@ -125,20 +125,16 @@ internal class RednoteHttpGateway(
         pollIntervalMs: Long,
         timeoutMs: Long,
     ): PublisherLoginResult {
+        // QR create/poll already enforces >=1s cadence in runRednoteQrLogin.
+        // Do not stack the general note/live requestInterval on top (align with bilibili).
         return safeRunRednoteQrLogin {
             runRednoteQrLogin(
                 onQrCode = onQrCode,
                 onStatusChanged = onStatusChanged,
-                createChallenge = {
-                    withRequestInterval { client.createQrLoginChallenge() }
-                },
-                pollStatus = { qrId, code ->
-                    withRequestInterval { client.pollQrLoginStatus(qrId, code) }
-                },
+                createChallenge = { client.createQrLoginChallenge() },
+                pollStatus = { qrId, code -> client.pollQrLoginStatus(qrId, code) },
                 applyLoginInfo = client::applyQrLoginInfo,
-                verifyLogin = {
-                    withRequestInterval { client.checkLoginState() }
-                },
+                verifyLogin = { client.checkLoginState() },
                 pollIntervalMs = pollIntervalMs,
                 timeoutMs = timeoutMs,
             )
