@@ -2,6 +2,8 @@ package com.incubator4.dynamic.rednote
 
 import kotlinx.coroutines.runBlocking
 import top.colter.dynamic.core.data.DynamicPayload
+import top.colter.dynamic.core.data.LivePayload
+import top.colter.dynamic.core.data.LiveStatus
 import top.colter.dynamic.core.data.SourceCursor
 import top.colter.dynamic.core.data.SourceEventType
 import top.colter.dynamic.core.data.SubscriptionPolicy
@@ -13,6 +15,7 @@ import top.colter.dynamic.core.plugin.PublisherLoginStatus
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
@@ -101,6 +104,134 @@ class RednotePublisherRuntimeTest {
         assertEquals(listOf("new-1"), gateway.enrichedNoteIds)
         val payload = updates.requests.single().update.payload
         assertTrue(payload is DynamicPayload)
+    }
+
+    @Test
+    fun `live poll baselines startup then emits started and ended updates`() = runBlocking {
+        val publisher = testPublisher(1, "64abc")
+        val liveStore = InMemoryRednoteLiveStatusStore()
+        val gateway = RecordingRednoteGateway()
+        gateway.setLiveSnapshot(publisher.externalId, testLiveSnapshot(publisher.externalId, status = LiveStatus.CLOSE))
+        val updates = RecordingSourceUpdatePublisher()
+        val scheduler = ManualTaskScheduler()
+        val runtime = runtime(
+            config = RednotePublisherConfig(pollingEnabled = true),
+            gateway = gateway,
+            scheduler = scheduler,
+            liveStatusStore = liveStore,
+        )
+        runtime.onLoad(
+            testContext(
+                updates,
+                FixedSubscriptionQueryService(listOf(publisher), livePolicy()),
+                taskScheduler = scheduler,
+            )
+        )
+        runtime.onStart()
+        scheduler.runOnce("rednote-detect")
+
+        assertEquals(emptyList(), updates.requests)
+        assertEquals(LiveStatus.CLOSE, liveStore.get(publisher.id)?.status)
+        assertEquals(listOf("64abc"), gateway.fetchedLiveUserIds)
+        assertEquals(emptyList(), gateway.fetchedUserIds)
+
+        val startedAt = System.currentTimeMillis() / 1000
+        gateway.setLiveSnapshot(
+            publisher.externalId,
+            testLiveSnapshot(publisher.externalId, status = LiveStatus.OPEN, startedAt = startedAt, title = "晚上好"),
+        )
+        scheduler.runOnce("rednote-detect")
+
+        val startedUpdate = updates.requests.single().update
+        val started = assertIs<LivePayload>(startedUpdate.payload)
+        assertEquals(SourceEventType.LIVE_STARTED, startedUpdate.eventType)
+        assertEquals("room-64abc", started.roomId)
+        assertEquals("晚上好", started.title)
+        assertEquals(startedAt, started.startedAtEpochSeconds)
+        assertEquals("https://www.xiaohongshu.com/livestream/room-64abc", startedUpdate.link)
+
+        gateway.setLiveSnapshot(publisher.externalId, testLiveSnapshot(publisher.externalId, status = LiveStatus.CLOSE))
+        scheduler.runOnce("rednote-detect")
+
+        assertEquals(2, updates.requests.size)
+        val endedUpdate = updates.requests.last().update
+        val ended = assertIs<LivePayload>(endedUpdate.payload)
+        assertEquals(SourceEventType.LIVE_ENDED, endedUpdate.eventType)
+        assertEquals(startedAt, ended.startedAtEpochSeconds)
+        assertTrue(ended.endedAtEpochSeconds != null)
+    }
+
+    @Test
+    fun `notes only subscription does not fetch live status`() = runBlocking {
+        val publisher = testPublisher(1, "64abc")
+        val gateway = RecordingRednoteGateway()
+        gateway.enqueueUserNotes(publisher.externalId, RednoteUserNotesPage())
+        val scheduler = ManualTaskScheduler()
+        val runtime = runtime(
+            config = RednotePublisherConfig(pollingEnabled = true),
+            gateway = gateway,
+            scheduler = scheduler,
+        )
+        runtime.onLoad(testContext(subscriptions = FixedSubscriptionQueryService(listOf(publisher)), taskScheduler = scheduler))
+        runtime.onStart()
+        scheduler.runOnce("rednote-detect")
+
+        assertEquals(listOf("64abc"), gateway.fetchedUserIds)
+        assertEquals(emptyList(), gateway.fetchedLiveUserIds)
+    }
+
+    @Test
+    fun `live detection can be disabled`() = runBlocking {
+        val publisher = testPublisher(1, "64abc")
+        val gateway = RecordingRednoteGateway()
+        gateway.setLiveSnapshot(publisher.externalId, testLiveSnapshot(publisher.externalId, status = LiveStatus.OPEN))
+        val scheduler = ManualTaskScheduler()
+        val runtime = runtime(
+            config = RednotePublisherConfig(pollingEnabled = true, liveDetectionEnabled = false),
+            gateway = gateway,
+            scheduler = scheduler,
+        )
+        runtime.onLoad(
+            testContext(
+                subscriptions = FixedSubscriptionQueryService(listOf(publisher), livePolicy()),
+                taskScheduler = scheduler,
+            )
+        )
+        runtime.onStart()
+        scheduler.runOnce("rednote-detect")
+
+        assertEquals(emptyList(), gateway.fetchedLiveUserIds)
+    }
+
+    @Test
+    fun `failed live publish does not overwrite previous status`() = runBlocking {
+        val publisher = testPublisher(1, "64abc")
+        val liveStore = InMemoryRednoteLiveStatusStore()
+        val gateway = RecordingRednoteGateway()
+        gateway.setLiveSnapshot(publisher.externalId, testLiveSnapshot(publisher.externalId, status = LiveStatus.CLOSE))
+        val updates = RecordingSourceUpdatePublisher()
+        val scheduler = ManualTaskScheduler()
+        val runtime = runtime(
+            config = RednotePublisherConfig(pollingEnabled = true),
+            gateway = gateway,
+            scheduler = scheduler,
+            liveStatusStore = liveStore,
+        )
+        runtime.onLoad(
+            testContext(
+                updates,
+                FixedSubscriptionQueryService(listOf(publisher), livePolicy()),
+                taskScheduler = scheduler,
+            )
+        )
+        runtime.onStart()
+        scheduler.runOnce("rednote-detect")
+        gateway.setLiveSnapshot(publisher.externalId, testLiveSnapshot(publisher.externalId, status = LiveStatus.OPEN))
+        updates.nextResult = SourceUpdatePublishResult.failed("主程序未收下")
+        scheduler.runOnce("rednote-detect")
+
+        assertEquals(1, updates.requests.size)
+        assertEquals(LiveStatus.CLOSE, liveStore.get(publisher.id)?.status)
     }
 
     @Test
@@ -214,6 +345,48 @@ class RednotePublisherRuntimeTest {
     }
 
     @Test
+    fun `subscription update enabling live baselines without publishing`() = runBlocking {
+        val publisher = testPublisher(1, "64abc")
+        val liveStore = InMemoryRednoteLiveStatusStore()
+        val gateway = RecordingRednoteGateway()
+        gateway.setLiveSnapshot(publisher.externalId, testLiveSnapshot(publisher.externalId, status = LiveStatus.OPEN))
+        val updates = RecordingSourceUpdatePublisher()
+        val scheduler = ManualTaskScheduler()
+        val subscriptions = FixedSubscriptionQueryService(listOf(publisher))
+        val runtime = runtime(
+            config = RednotePublisherConfig(pollingEnabled = true),
+            gateway = gateway,
+            scheduler = scheduler,
+            liveStatusStore = liveStore,
+        )
+        runtime.onLoad(testContext(updates, subscriptions, taskScheduler = scheduler))
+        runtime.onStart()
+        scheduler.runOnce("rednote-detect")
+        assertEquals(emptyList(), gateway.fetchedLiveUserIds)
+
+        val current = subscriptions.snapshots.single()
+        val enabledLive = current.copy(
+            subscriptions = current.subscriptions.map { item ->
+                item.copy(subscription = item.subscription.copy(policy = livePolicy()))
+            }
+        )
+        subscriptions.snapshots = listOf(enabledLive)
+        runtime.onSubscriptionChanged(
+            SubscriptionChangedEvent(
+                changeType = SubscriptionChangeType.UPDATED,
+                subscription = enabledLive.subscriptions.single().subscription,
+                publisher = publisher,
+                subscriber = enabledLive.subscriptions.single().subscriber,
+                changedAtEpochSeconds = 2,
+            )
+        )
+
+        assertEquals(LiveStatus.OPEN, liveStore.get(publisher.id)?.status)
+        assertEquals(emptyList(), updates.requests)
+        assertEquals(listOf("64abc"), gateway.fetchedLiveUserIds)
+    }
+
+    @Test
     fun `plugin lookup and subscription change delegate to runtime`() = runBlocking {
         val publisher = testPublisher(1, "64abc")
         val gateway = RecordingRednoteGateway(
@@ -248,12 +421,14 @@ class RednotePublisherRuntimeTest {
         gateway: RednoteGateway = RecordingRednoteGateway(),
         scheduler: ManualTaskScheduler = ManualTaskScheduler(),
         cursorStore: RednoteCursorStore? = null,
+        liveStatusStore: RednoteLiveStatusStore? = null,
     ): RednotePublisherRuntime {
         return RednotePublisherRuntime(
             loadConfig = { config },
             gatewayFactory = { gateway },
             taskScheduler = scheduler,
             cursorStoreFactory = cursorStore?.let { store -> { store } },
+            liveStatusStoreFactory = liveStatusStore?.let { store -> { store } },
         )
     }
 }

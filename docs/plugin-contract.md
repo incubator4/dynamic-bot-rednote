@@ -47,7 +47,7 @@ if (result.accepted) {
 
 `accepted` 为真当且仅当结果不是 `FAILED`。不要用事件总线投递动态。
 
-有订阅时读 `subscriptionQueryService` 的 `PublisherSubscribers.subscriptions` 和 `SubscriptionPolicy`，不要只看“有没有订阅者”。
+有订阅时读 `subscriptionQueryService` 的 `PublisherSubscribers.subscriptions` 和 `SubscriptionPolicy`，不要只看“有没有订阅者”。笔记轮询看 `DYNAMIC`，直播轮询看 `LIVE_STARTED` / `LIVE_ENDED`。直播状态用 `sourceStateStore.findLatestLiveStatus` / `saveLiveStatus`；`FAILED` 时不得覆盖旧状态。
 
 ## 动态内容
 

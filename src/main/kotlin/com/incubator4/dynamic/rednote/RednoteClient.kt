@@ -102,6 +102,16 @@ internal class RednoteClient(
         return parseRednoteNoteDetail(body, note)
     }
 
+    suspend fun fetchLiveSnapshot(userId: String): RednoteLiveSnapshot {
+        val normalized = userId.trim()
+        require(normalized.isNotBlank()) { "小红书用户 ID 不能为空" }
+        val response = sendGet(
+            uri = uriWithQuery(userOtherInfoUri, mapOf("target_user_id" to normalized)),
+        )
+        val body = requireJsonBody(response, "小红书直播状态")
+        return parseRednoteLiveSnapshot(body, normalized)
+    }
+
     fun exportCookieHeader(): String = currentCookieHeader()
 
     internal fun toLoginResult(statusCode: Int, body: String): PublisherLoginResult {

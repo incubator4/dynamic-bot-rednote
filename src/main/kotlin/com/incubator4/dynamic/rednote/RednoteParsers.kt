@@ -2,6 +2,7 @@ package com.incubator4.dynamic.rednote
 
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
+import top.colter.dynamic.core.data.LiveStatus
 
 internal fun parseRednotePublisher(json: String): RednotePublisherSnapshot? {
     val data = parseRednoteSuccessData(json, "小红书用户资料响应不是有效 JSON")
@@ -21,6 +22,86 @@ internal fun parseRednotePublisher(json: String): RednotePublisherSnapshot? {
         redId = basic.string("red_id", "redId"),
         description = basic.string("desc", "description"),
     )
+}
+
+internal fun parseRednoteLiveSnapshot(json: String, fallbackUserId: String): RednoteLiveSnapshot {
+    val data = parseRednoteSuccessData(json, "小红书直播状态响应不是有效 JSON")
+    val live = data.obj("live", "live_info", "user_live") ?: data.obj("live_room")
+    val userId = live?.string("user_id", "userid", "userId")
+        ?: data.obj("basic_info", "user")?.string("user_id", "userid", "userId")
+        ?: data.string("user_id", "userid", "userId")
+        ?: fallbackUserId
+    if (live == null) {
+        return RednoteLiveSnapshot(userId = userId)
+    }
+
+    val room = live.obj("room", "live_room")
+    val roomId = firstNonBlank(
+        live.string("room_id", "roomId", "live_id", "liveId"),
+        room?.string("room_id", "roomId", "id"),
+        parseRednoteLiveRoomId(live.string("live_link", "link", "url", "jump_url")),
+        parseRednoteLiveRoomId(room?.string("live_link", "link", "url")),
+    ).orEmpty()
+    val living = live.boolean("has_living", "is_living", "living", "hasLive", "has_live")
+        ?: room?.boolean("has_living", "is_living", "living")
+        ?: live.long("status", "live_status", "liveStatus")?.let { it == 1L }
+        ?: room?.long("status", "live_status")?.let { it == 1L }
+        ?: roomId.isNotBlank()
+    val resolvedRoomId = roomId.ifBlank { userId.takeIf { living }.orEmpty() }
+    val title = firstNonBlank(
+        live.string("title", "room_name", "display_title"),
+        room?.string("title", "name", "room_name"),
+    )?.takeUnless { it == "直播中" }.orEmpty()
+    val coverUrl = firstHttpUrl(
+        live.string("cover", "cover_url", "image", "cover_image"),
+        parseCoverUrl(live.obj("cover") ?: room?.obj("cover")),
+        room?.string("cover", "cover_url", "image"),
+    )
+    val area = firstNonBlank(
+        live.string("area", "category", "partition"),
+        room?.string("area", "category"),
+    )
+    val startedAt = parseRednoteEpochSeconds(
+        live.long("start_time", "started_at", "live_start_time", "time", "startTime")
+            ?: room?.long("start_time", "started_at", "time"),
+    )
+    return RednoteLiveSnapshot(
+        userId = userId,
+        roomId = resolvedRoomId,
+        status = if (living) LiveStatus.OPEN else LiveStatus.CLOSE,
+        title = title,
+        coverUrl = coverUrl,
+        area = area,
+        startedAtEpochSeconds = startedAt.takeIf { living },
+    )
+}
+
+internal fun parseRednoteLiveRoomId(raw: String?): String? {
+    val value = raw?.trim()?.takeIf { it.isNotBlank() } ?: return null
+    if (value.matches(Regex("""[A-Za-z0-9]+"""))) return value
+    Regex("""(?:room_id|roomId)=([^&/?#]+)""")
+        .find(value)
+        ?.groupValues
+        ?.getOrNull(1)
+        ?.trim()
+        ?.takeIf { it.isNotBlank() }
+        ?.let { return it }
+    return Regex("""/(?:livestream|live_room|live)/([^/?#]+)""")
+        .find(value)
+        ?.groupValues
+        ?.getOrNull(1)
+        ?.trim()
+        ?.takeIf { it.isNotBlank() }
+}
+
+internal fun parseRednoteEpochSeconds(raw: Long?): Long? {
+    val value = raw ?: return null
+    if (value <= 0L) return null
+    return if (value > 10_000_000_000L) value / 1_000L else value
+}
+
+private fun firstNonBlank(vararg values: String?): String? {
+    return values.firstOrNull { !it.isNullOrBlank() }
 }
 
 internal fun parseRednoteUserNotesPage(json: String, fallbackUserId: String): RednoteUserNotesPage {

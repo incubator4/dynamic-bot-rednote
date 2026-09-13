@@ -8,7 +8,7 @@ Read this file first. Longer rationale lives in `docs/`. Cursor also loads `.cur
 
 ## Product
 
-Subscribe to [Xiaohongshu / RedNote / 小红书](https://www.xiaohongshu.com) publishers (users) and push new notes into dynamic-bot as `DynamicPayload` updates.
+Subscribe to [Xiaohongshu / RedNote / 小红书](https://www.xiaohongshu.com) publishers (users) and push new notes into dynamic-bot as `DynamicPayload` updates, plus live start/end as `LivePayload`.
 
 Official reference plugins:
 

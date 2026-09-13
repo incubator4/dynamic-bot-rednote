@@ -6,6 +6,8 @@ import top.colter.dynamic.core.config.ConfigApplyResult
 import top.colter.dynamic.core.config.ConfigurablePlugin
 import top.colter.dynamic.core.config.loadOrCreate
 import top.colter.dynamic.core.data.EntityState
+import top.colter.dynamic.core.data.LivePayload
+import top.colter.dynamic.core.data.LiveStatus
 import top.colter.dynamic.core.data.MediaKind
 import top.colter.dynamic.core.data.MediaRef
 import top.colter.dynamic.core.data.PlatformDescriptor
@@ -14,9 +16,13 @@ import top.colter.dynamic.core.data.Publisher
 import top.colter.dynamic.core.data.PublisherInfo
 import top.colter.dynamic.core.data.PublisherKey
 import top.colter.dynamic.core.data.PublisherKind
+import top.colter.dynamic.core.data.PublisherLiveStatus
 import top.colter.dynamic.core.data.PublisherSubscribers
 import top.colter.dynamic.core.data.SourceCursor
+import top.colter.dynamic.core.data.SourceEventType
+import top.colter.dynamic.core.data.SourceUpdate
 import top.colter.dynamic.core.data.SubscriptionEventKind
+import top.colter.dynamic.core.data.UpdateKey
 import top.colter.dynamic.core.data.hasSeen
 import top.colter.dynamic.core.event.SourceUpdatePublishRequest
 import top.colter.dynamic.core.event.SourceUpdatePublisher
@@ -60,7 +66,7 @@ internal class RednotePublisherRuntime() :
     override val configId: String
         get() = pluginId
     override val configName: String = "小红书动态源"
-    override val configDescription: String = "小红书动态轮询与登录配置。"
+    override val configDescription: String = "小红书笔记与直播轮询、登录配置。"
     override val configClass = RednotePublisherConfig::class
     override val configFormSpec = RednotePublisherConfigForm.spec
 
@@ -77,10 +83,14 @@ internal class RednotePublisherRuntime() :
     private var cursorStoreFactory: () -> RednoteCursorStore = {
         error("小红书游标存储尚未初始化")
     }
+    private var liveStatusStoreFactory: () -> RednoteLiveStatusStore = {
+        error("小红书直播状态存储尚未初始化")
+    }
 
     private var useContextConfigService: Boolean = true
     private var useContextTaskScheduler: Boolean = true
-    private var useContextStateStore: Boolean = true
+    private var useContextCursorStore: Boolean = true
+    private var useContextLiveStore: Boolean = true
 
     private lateinit var taskScheduler: TaskScheduler
     private lateinit var sourceUpdatePublisher: SourceUpdatePublisher
@@ -90,13 +100,17 @@ internal class RednotePublisherRuntime() :
     private lateinit var mapper: RednoteDynamicMapper
     private lateinit var requestFailureHandler: RednoteRequestFailureHandler
     private lateinit var cursorStore: RednoteCursorStore
+    private lateinit var liveStatusStore: RednoteLiveStatusStore
     private lateinit var detectTask: TaskDefinition
 
     private val detectMutex: Mutex = Mutex()
     private val publisherLock: Any = Any()
 
     @Volatile
-    private var activePublishers: Map<Int, Publisher> = emptyMap()
+    private var dynamicPublishers: Map<Int, Publisher> = emptyMap()
+
+    @Volatile
+    private var livePublishers: Map<Int, Publisher> = emptyMap()
 
     @Volatile
     private var pendingDetection: Boolean = false
@@ -107,6 +121,7 @@ internal class RednotePublisherRuntime() :
         saveConfig: (String, RednotePublisherConfig) -> Unit = { _, _ -> },
         taskScheduler: TaskScheduler,
         cursorStoreFactory: (() -> RednoteCursorStore)? = null,
+        liveStatusStoreFactory: (() -> RednoteLiveStatusStore)? = null,
     ) : this() {
         this.loadConfig = loadConfig
         this.gatewayFactory = gatewayFactory
@@ -116,7 +131,11 @@ internal class RednotePublisherRuntime() :
         useContextTaskScheduler = false
         if (cursorStoreFactory != null) {
             this.cursorStoreFactory = cursorStoreFactory
-            useContextStateStore = false
+            useContextCursorStore = false
+        }
+        if (liveStatusStoreFactory != null) {
+            this.liveStatusStoreFactory = liveStatusStoreFactory
+            useContextLiveStore = false
         }
     }
 
@@ -130,8 +149,11 @@ internal class RednotePublisherRuntime() :
         if (useContextTaskScheduler) {
             taskScheduler = context.taskScheduler
         }
-        if (useContextStateStore) {
+        if (useContextCursorStore) {
             cursorStoreFactory = { SourceStateRednoteCursorStore(context.sourceStateStore) }
+        }
+        if (useContextLiveStore) {
+            liveStatusStoreFactory = { SourceStateRednoteLiveStatusStore(context.sourceStateStore) }
         }
         if (useContextConfigService) {
             loadConfig = { id -> context.configService.loadOrCreate(id) { RednotePublisherConfig() } }
@@ -147,10 +169,11 @@ internal class RednotePublisherRuntime() :
             notificationPublisher = context.notificationPublisher,
         )
         cursorStore = cursorStoreFactory()
+        liveStatusStore = liveStatusStoreFactory()
         detectTask = TaskDefinition(
             id = detectTaskId,
-            name = "小红书笔记检测",
-            description = "按配置间隔检测已订阅小红书用户的新笔记，并发布到主项目。",
+            name = "小红书笔记与直播检测",
+            description = "按配置间隔检测已订阅小红书用户的新笔记和直播状态，并发布到主项目。",
             schedule = TaskSchedule.FixedDelay(config.pollingIntervalSeconds.seconds, runImmediately = true),
             action = { detectAndPublish() },
         )
@@ -317,7 +340,7 @@ internal class RednotePublisherRuntime() :
         return ::requestFailureHandler.isInitialized && requestFailureHandler.isPollingPaused()
     }
 
-    private suspend fun detectAndPublish() {
+    private suspend fun detectAndPublish(skipLiveDetection: Boolean = false) {
         if (!config.pollingEnabled) return
         if (::requestFailureHandler.isInitialized && requestFailureHandler.isPollingPaused()) {
             logger.debug { "小红书检测跳过：登录状态失效或疑似风控，轮询请求已暂停" }
@@ -332,7 +355,7 @@ internal class RednotePublisherRuntime() :
         try {
             do {
                 pendingDetection = false
-                detectAndPublishLocked()
+                detectAndPublishLocked(skipLiveDetection)
             } while (pendingDetection)
             persistRuntimeCookieIfChanged()
         } finally {
@@ -340,21 +363,26 @@ internal class RednotePublisherRuntime() :
         }
     }
 
-    private suspend fun detectAndPublishLocked() {
+    private suspend fun detectAndPublishLocked(skipLiveDetection: Boolean) {
         loadActivePublishers(logSummary = false)
-        val publisherSnapshot = activePublishers
-        if (publisherSnapshot.isEmpty()) {
+        val dynamicPublisherSnapshot = dynamicPublishers
+        val livePublisherSnapshot = livePublishers
+        if (dynamicPublisherSnapshot.isEmpty() && livePublisherSnapshot.isEmpty()) {
             logger.debug { "小红书检测跳过：没有活跃订阅发布者" }
             return
         }
 
         val now = System.currentTimeMillis() / 1000
-        for (publisher in publisherSnapshot.values) {
+        for (publisher in dynamicPublisherSnapshot.values) {
             if (requestFailureHandler.isPollingPaused()) {
                 logger.debug { "小红书检测中止：轮询已暂停" }
                 return
             }
             detectPublisherNotes(publisher, now)
+        }
+        if (requestFailureHandler.isPollingPaused()) return
+        if (!skipLiveDetection) {
+            detectLiveStatusChanges(livePublisherSnapshot, now)
         }
     }
 
@@ -419,6 +447,132 @@ internal class RednotePublisherRuntime() :
         }
     }
 
+    private suspend fun detectLiveStatusChanges(publisherSnapshot: Map<Int, Publisher>, now: Long) {
+        if (!config.liveDetectionEnabled || publisherSnapshot.isEmpty()) return
+
+        for (publisher in publisherSnapshot.values) {
+            if (requestFailureHandler.isPollingPaused()) {
+                logger.debug { "小红书直播检测中止：轮询已暂停" }
+                return
+            }
+            val userId = normalizeUserId(publisher.externalId) ?: continue
+            val snapshot = runRednoteRequest("直播状态拉取 uid=$userId") {
+                gateway.fetchLiveSnapshot(userId)
+            }.getOrNull() ?: continue
+            val previous = liveStatusStore.get(publisher.id)
+            val current = buildLiveState(publisher, snapshot, previous, now)
+            val update = buildLiveUpdate(publisher, previous, current, now)
+            if (update != null) {
+                logger.info {
+                    "小红书检测到直播状态变化：publisher=${publisher.displayLabel()}，event=${update.eventType.value}，roomId=${current.roomId}"
+                }
+            }
+            if (update == null || publishSourceUpdate(update)) {
+                liveStatusStore.save(current)
+            } else {
+                logger.warn {
+                    "小红书直播状态发布失败，已保留旧状态：publisher=${publisher.displayLabel()}，roomId=${current.roomId}"
+                }
+            }
+        }
+    }
+
+    private suspend fun ensureLiveBaseline(publisher: Publisher): Boolean {
+        if (!config.liveDetectionEnabled || liveStatusStore.get(publisher.id) != null) return false
+        val userId = normalizeUserId(publisher.externalId) ?: return false
+        val now = System.currentTimeMillis() / 1000
+        val snapshot = runRednoteRequest("直播状态基线 uid=$userId") {
+            gateway.fetchLiveSnapshot(userId)
+        }.getOrNull() ?: return true
+        liveStatusStore.save(buildLiveState(publisher, snapshot, previous = null, observedAt = now))
+        return true
+    }
+
+    private fun buildLiveState(
+        publisher: Publisher,
+        snapshot: RednoteLiveSnapshot,
+        previous: PublisherLiveStatus?,
+        observedAt: Long,
+    ): PublisherLiveStatus {
+        val status = when (snapshot.status) {
+            LiveStatus.OPEN -> LiveStatus.OPEN
+            LiveStatus.CLOSE, LiveStatus.ROUND -> LiveStatus.CLOSE
+        }
+        val roomId = snapshot.roomId.takeIf { it.isNotBlank() } ?: previous?.roomId.orEmpty()
+        val title = snapshot.title.takeIf { it.isNotBlank() }
+            ?: previous?.title?.takeIf { it.isNotBlank() }
+            ?: publisher.name
+        val cover = snapshot.coverUrl?.takeIf { it.isNotBlank() }?.let { MediaRef(it, MediaKind.COVER) }
+            ?: previous?.cover
+        val area = snapshot.area?.takeIf { it.isNotBlank() } ?: previous?.area
+        val startedAt = if (status == LiveStatus.OPEN) {
+            snapshot.startedAtEpochSeconds
+                ?: previous?.takeIf { it.status == LiveStatus.OPEN }?.startedAtEpochSeconds
+                ?: observedAt
+        } else {
+            previous?.startedAtEpochSeconds ?: snapshot.startedAtEpochSeconds
+        }
+        return PublisherLiveStatus(
+            publisherId = publisher.id,
+            roomId = roomId,
+            status = status,
+            title = title,
+            cover = cover,
+            area = area,
+            startedAtEpochSeconds = startedAt,
+            lastObservedAtEpochSeconds = observedAt,
+        )
+    }
+
+    private fun buildLiveUpdate(
+        publisher: Publisher,
+        previous: PublisherLiveStatus?,
+        current: PublisherLiveStatus,
+        observedAt: Long,
+    ): SourceUpdate? {
+        if (previous == null) return null
+
+        val previousOpen = previous.status == LiveStatus.OPEN
+        val currentOpen = current.status == LiveStatus.OPEN
+        if (previousOpen == currentOpen) return null
+
+        val eventType = if (currentOpen) SourceEventType.LIVE_STARTED else SourceEventType.LIVE_ENDED
+        val startedAt = if (eventType == SourceEventType.LIVE_STARTED) {
+            current.startedAtEpochSeconds ?: observedAt
+        } else {
+            previous.startedAtEpochSeconds ?: current.startedAtEpochSeconds
+        }
+        val endedAt = if (eventType == SourceEventType.LIVE_ENDED) observedAt else null
+        val eventTime = when (eventType) {
+            SourceEventType.LIVE_STARTED -> startedAt ?: observedAt
+            SourceEventType.LIVE_ENDED -> endedAt ?: observedAt
+            else -> observedAt
+        }
+        val roomId = current.roomId.ifBlank { previous.roomId }
+        val title = current.title.ifBlank { previous.title }
+        return SourceUpdate(
+            key = UpdateKey(
+                publisherKey = publisher.key,
+                eventType = eventType,
+                externalId = "$roomId:$eventTime",
+            ),
+            publisher = publisher.toInfo(),
+            occurredAtEpochSeconds = eventTime,
+            observedAtEpochSeconds = observedAt,
+            link = liveRoomLink(roomId),
+            payload = LivePayload(
+                roomId = roomId,
+                title = title,
+                area = current.area ?: previous.area,
+                cover = current.cover ?: previous.cover,
+                status = current.status,
+                previousStatus = previous.status,
+                startedAtEpochSeconds = startedAt,
+                endedAtEpochSeconds = endedAt,
+            ),
+        )
+    }
+
     private fun markNotesSeen(publisherId: Int, notes: List<RednoteNoteSnapshot>, now: Long) {
         notes.asReversed().forEach { note ->
             val timestamp = note.createdAtEpochSeconds.takeIf { it > 0 } ?: now
@@ -435,13 +589,19 @@ internal class RednotePublisherRuntime() :
         val publisherId = event.publisher.id
         val snapshot = subscriptionQueryService.findActivePublisherWithSubscribersById(publisherId)
         if (snapshot == null || snapshot.publisher.platformId != platformId) {
-            removePublisherFromSnapshot(publisherId)
+            removePublisherFromSnapshots(publisherId)
             return
         }
 
-        applyPublisherSnapshot(snapshot)
-        if (config.pollingEnabled && ::taskScheduler.isInitialized && taskScheduler.isRunning(detectTaskId)) {
-            detectAndPublish()
+        val interests = applyPublisherSnapshot(snapshot)
+        if (interests.becameDynamicPresent && cursorStore.get(publisherId) == null) {
+            cursorStore.ensureBaseline(publisherId, event.subscription.createdAtEpochSeconds)
+        }
+        if (config.pollingEnabled && ::taskScheduler.isInitialized && taskScheduler.isRunning(detectTaskId) && interests.hasAnyInterest) {
+            val liveBaselineRequested = interests.becameLivePresent && ensureLiveBaseline(snapshot.publisher)
+            if (interests.hasDynamic || !liveBaselineRequested) {
+                detectAndPublish(skipLiveDetection = liveBaselineRequested)
+            }
         }
     }
 
@@ -449,48 +609,71 @@ internal class RednotePublisherRuntime() :
         val publisherId = event.publisher.id
         val snapshot = subscriptionQueryService.findActivePublisherWithSubscribersById(publisherId)
         if (snapshot == null || snapshot.publisher.platformId != platformId) {
-            removePublisherFromSnapshot(publisherId)
+            removePublisherFromSnapshots(publisherId)
             cursorStore.evict(publisherId)
+            liveStatusStore.evict(publisherId)
         } else {
             applyPublisherSnapshot(snapshot)
         }
     }
 
-    private fun applyPublisherSnapshot(snapshot: PublisherSubscribers): Boolean {
+    private fun applyPublisherSnapshot(snapshot: PublisherSubscribers): PublisherInterests {
         val publisherId = snapshot.publisher.id
-        val hasDynamic = snapshot.hasDynamicEventSubscription()
-        val becamePresent = synchronized(publisherLock) {
-            val wasPresent = activePublishers.containsKey(publisherId)
-            activePublishers = if (hasDynamic) {
-                activePublishers + (publisherId to snapshot.publisher)
+        val hasDynamic = snapshot.hasEnabledEvent(SubscriptionEventKind.DYNAMIC)
+        val hasLive = config.liveDetectionEnabled && snapshot.hasLiveEventSubscription()
+        val interests = synchronized(publisherLock) {
+            val wasDynamicPresent = dynamicPublishers.containsKey(publisherId)
+            val wasLivePresent = livePublishers.containsKey(publisherId)
+            dynamicPublishers = if (hasDynamic) {
+                dynamicPublishers + (publisherId to snapshot.publisher)
             } else {
-                activePublishers - publisherId
+                dynamicPublishers - publisherId
             }
-            hasDynamic && !wasPresent
+            livePublishers = if (hasLive) {
+                livePublishers + (publisherId to snapshot.publisher)
+            } else {
+                livePublishers - publisherId
+            }
+            PublisherInterests(
+                hasDynamic = hasDynamic,
+                hasLive = hasLive,
+                becameDynamicPresent = hasDynamic && !wasDynamicPresent,
+                becameLivePresent = hasLive && !wasLivePresent,
+            )
         }
-        if (!hasDynamic) {
+        if (!interests.hasDynamic) {
             cursorStore.evict(publisherId)
         }
-        return becamePresent
+        if (!interests.hasLive) {
+            liveStatusStore.evict(publisherId)
+        }
+        return interests
     }
 
-    private fun removePublisherFromSnapshot(publisherId: Int) {
+    private fun removePublisherFromSnapshots(publisherId: Int) {
         synchronized(publisherLock) {
-            activePublishers = activePublishers - publisherId
+            dynamicPublishers = dynamicPublishers - publisherId
+            livePublishers = livePublishers - publisherId
         }
     }
 
     private fun loadActivePublishers(logSummary: Boolean = true) {
-        val loaded = subscriptionQueryService
+        val snapshots = subscriptionQueryService
             .findActivePublishersWithSubscribersBySourcePlatform(platformId.value)
-            .filter { it.hasDynamicEventSubscription() }
+        val loadedDynamic = snapshots
+            .filter { it.hasEnabledEvent(SubscriptionEventKind.DYNAMIC) }
+            .map { it.publisher }
+            .associateBy { it.id }
+        val loadedLive = snapshots
+            .filter { config.liveDetectionEnabled && it.hasLiveEventSubscription() }
             .map { it.publisher }
             .associateBy { it.id }
         synchronized(publisherLock) {
-            activePublishers = loaded
+            dynamicPublishers = loadedDynamic
+            livePublishers = loadedLive
         }
         if (logSummary) {
-            logger.info { "小红书订阅发布者已加载：动态=${loaded.size}" }
+            logger.info { "小红书订阅发布者已加载：动态=${loadedDynamic.size}，直播=${loadedLive.size}" }
         }
     }
 
@@ -501,7 +684,7 @@ internal class RednotePublisherRuntime() :
         return requestFailureHandler.run(operation, block)
     }
 
-    private suspend fun publishSourceUpdate(update: top.colter.dynamic.core.data.SourceUpdate): Boolean {
+    private suspend fun publishSourceUpdate(update: SourceUpdate): Boolean {
         logger.debug {
             "小红书提交来源更新到主项目：event=${update.eventType.value}，update=${update.key.stableValue()}，publisher=${update.publisher.name}"
         }
@@ -583,16 +766,31 @@ internal class RednotePublisherRuntime() :
         )
     }
 
-    private fun PublisherSubscribers.hasDynamicEventSubscription(): Boolean {
+    private fun PublisherSubscribers.hasLiveEventSubscription(): Boolean {
+        return hasEnabledEvent(SubscriptionEventKind.LIVE_STARTED) ||
+            hasEnabledEvent(SubscriptionEventKind.LIVE_ENDED)
+    }
+
+    private fun PublisherSubscribers.hasEnabledEvent(kind: SubscriptionEventKind): Boolean {
         return subscriptions.any { item ->
             item.subscription.state == EntityState.ACTIVE &&
                 item.subscriber.state.allowsActiveDelivery &&
-                SubscriptionEventKind.DYNAMIC in item.subscription.policy.enabledEvents
+                kind in item.subscription.policy.enabledEvents
         }
     }
 
     private fun Publisher.displayLabel(): String {
         return name.takeIf { it.isNotBlank() } ?: externalId
+    }
+
+    private data class PublisherInterests(
+        val hasDynamic: Boolean,
+        val hasLive: Boolean,
+        val becameDynamicPresent: Boolean,
+        val becameLivePresent: Boolean,
+    ) {
+        val hasAnyInterest: Boolean
+            get() = hasDynamic || hasLive
     }
 
     private companion object {

@@ -22,9 +22,17 @@ internal fun JsonObject.string(vararg keys: String): String? {
     return null
 }
 
-internal fun JsonObject.boolean(key: String): Boolean? {
-    val primitive = this[key] as? JsonPrimitive ?: return null
-    return primitive.booleanOrNull
+internal fun JsonObject.boolean(vararg keys: String): Boolean? {
+    keys.forEach { key ->
+        val primitive = this[key] as? JsonPrimitive ?: return@forEach
+        primitive.booleanOrNull?.let { return it }
+        primitive.longOrNull?.let { return it != 0L }
+        when (primitive.contentOrNull?.trim()?.lowercase()) {
+            "1", "true", "yes" -> return true
+            "0", "false", "no" -> return false
+        }
+    }
+    return null
 }
 
 internal fun JsonObject.long(vararg keys: String): Long? {

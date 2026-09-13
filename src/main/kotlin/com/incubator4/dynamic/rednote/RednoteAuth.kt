@@ -21,6 +21,7 @@ internal const val REDNOTE_USER_ME_URL: String = "https://edith.xiaohongshu.com/
 internal const val REDNOTE_USER_OTHERINFO_URL: String = "https://edith.xiaohongshu.com/api/sns/web/v1/user/otherinfo"
 internal const val REDNOTE_USER_POSTED_URL: String = "https://edith.xiaohongshu.com/api/sns/web/v1/user_posted"
 internal const val REDNOTE_FEED_URL: String = "https://edith.xiaohongshu.com/api/sns/web/v1/feed"
+internal const val REDNOTE_LIVE_HOME: String = "$REDNOTE_HOME/livestream"
 internal const val REDNOTE_DEFAULT_AVATAR: String = "https://www.xiaohongshu.com/favicon.ico"
 
 internal open class RednoteApiException(

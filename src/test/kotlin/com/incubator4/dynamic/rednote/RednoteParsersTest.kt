@@ -6,6 +6,7 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import top.colter.dynamic.core.data.LiveStatus
 
 class RednoteParsersTest {
     @Test
@@ -156,5 +157,54 @@ class RednoteParsersTest {
         assertEquals(12_000L, parseRednoteCount("1.2万"))
         assertEquals(3L, parseRednoteCount("3"))
         assertFalse(parseRednoteCount(" ").let { it != null })
+    }
+
+    @Test
+    fun `parse live snapshot from otherinfo live object`() {
+        val live = parseRednoteLiveSnapshot(
+            """
+            {
+              "code": 0,
+              "success": true,
+              "data": {
+                "basic_info": { "user_id": "64abc", "nickname": "博主" },
+                "live": {
+                  "user_id": "64abc",
+                  "room_id": "54123",
+                  "live_link": "xhsdiscover://live_audience?room_id=54123",
+                  "title": "晚上好",
+                  "cover": "https://example.com/live.jpg",
+                  "start_time": 1700000000
+                }
+              }
+            }
+            """.trimIndent(),
+            fallbackUserId = "64abc",
+        )
+
+        assertEquals("64abc", live.userId)
+        assertEquals("54123", live.roomId)
+        assertEquals(LiveStatus.OPEN, live.status)
+        assertEquals("晚上好", live.title)
+        assertEquals("https://example.com/live.jpg", live.coverUrl)
+        assertEquals(1_700_000_000L, live.startedAtEpochSeconds)
+    }
+
+    @Test
+    fun `missing live object is treated as closed`() {
+        val live = parseRednoteLiveSnapshot(
+            """{"code":0,"success":true,"data":{"basic_info":{"user_id":"64abc"}}}""",
+            fallbackUserId = "64abc",
+        )
+        assertEquals(LiveStatus.CLOSE, live.status)
+        assertEquals("64abc", live.userId)
+        assertEquals("", live.roomId)
+    }
+
+    @Test
+    fun `live room id can be parsed from livestream url`() {
+        assertEquals("54123", parseRednoteLiveRoomId("https://www.xiaohongshu.com/livestream/54123"))
+        assertEquals("54123", parseRednoteLiveRoomId("xhsdiscover://live_audience?room_id=54123"))
+        assertEquals(1_700_000_000L, parseRednoteEpochSeconds(1_700_000_000_000L))
     }
 }

@@ -31,6 +31,7 @@ public class RednotePublisherPlugin private constructor(
         saveConfig: (String, RednotePublisherConfig) -> Unit = { _, _ -> },
         taskScheduler: TaskScheduler,
         cursorStoreFactory: (() -> RednoteCursorStore)? = null,
+        liveStatusStoreFactory: (() -> RednoteLiveStatusStore)? = null,
     ) : this(
         RednotePublisherRuntime(
             loadConfig = loadConfig,
@@ -38,6 +39,7 @@ public class RednotePublisherPlugin private constructor(
             saveConfig = saveConfig,
             taskScheduler = taskScheduler,
             cursorStoreFactory = cursorStoreFactory,
+            liveStatusStoreFactory = liveStatusStoreFactory,
         ),
     )
 

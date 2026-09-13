@@ -89,7 +89,7 @@ class RednotePublisherConfigFormTest {
         val fields = RednotePublisherConfigForm.spec.fields
         val sections = fields.groupBy { it.section }
 
-        assertEquals(setOf("轮询与风控"), sections.keys)
+        assertEquals(setOf("轮询与风控", "笔记与直播"), sections.keys)
         assertEquals(
             listOf(
                 "pollingEnabled",
@@ -100,6 +100,7 @@ class RednotePublisherConfigFormTest {
             ),
             sections.getValue("轮询与风控").map { it.path },
         )
+        assertEquals(listOf("liveDetectionEnabled"), sections.getValue("笔记与直播").map { it.path })
         assertFalse(fields.any { it.path == "cookie" })
         assertTrue(fields.all { it.label.any { ch -> ch in '\u4e00'..'\u9fff' } })
     }
@@ -115,6 +116,8 @@ class RednotePublisherConfigFormTest {
         assertEquals(1L, fields.getValue("requestIntervalSeconds").min)
         assertEquals(ConfigNumberKind.INTEGER, fields.getValue("replayWindowMinutes").numberKind)
         assertEquals(ConfigNumberKind.INTEGER, fields.getValue("maxConsecutiveLoginFailures").numberKind)
+        assertEquals("直播检测", fields.getValue("liveDetectionEnabled").label)
+        assertFalse(fields.getValue("liveDetectionEnabled").restartRequired)
     }
 
     @Test

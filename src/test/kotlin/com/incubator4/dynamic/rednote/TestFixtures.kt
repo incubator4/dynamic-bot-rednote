@@ -6,6 +6,7 @@ import kotlinx.coroutines.SupervisorJob
 import top.colter.dynamic.core.config.ConfigMigration
 import top.colter.dynamic.core.config.ConfigService
 import top.colter.dynamic.core.config.PluginDataStore
+import top.colter.dynamic.core.data.LiveStatus
 import top.colter.dynamic.core.data.MediaKind
 import top.colter.dynamic.core.data.MediaRef
 import top.colter.dynamic.core.data.Publisher
@@ -18,6 +19,7 @@ import top.colter.dynamic.core.data.SourceEventType
 import top.colter.dynamic.core.data.Subscriber
 import top.colter.dynamic.core.data.SubscriberState
 import top.colter.dynamic.core.data.Subscription
+import top.colter.dynamic.core.data.SubscriptionEventKind
 import top.colter.dynamic.core.data.SubscriptionPolicy
 import top.colter.dynamic.core.data.SubscriptionSubscriber
 import top.colter.dynamic.core.data.TargetAddress
@@ -114,10 +116,12 @@ internal open class RecordingRednoteGateway(
     private val exportedCookie: String = "",
     private val publishers: Map<String, RednotePublisherSnapshot> = emptyMap(),
     private val userNotesPages: MutableMap<String, MutableList<RednoteUserNotesPage>> = mutableMapOf(),
+    private val liveSnapshots: MutableMap<String, RednoteLiveSnapshot> = mutableMapOf(),
 ) : RednoteGateway {
     var loginCheckCount: Int = 0
         private set
     val fetchedUserIds: MutableList<String> = mutableListOf()
+    val fetchedLiveUserIds: MutableList<String> = mutableListOf()
     val enrichedNoteIds: MutableList<String> = mutableListOf()
 
     override fun exportCookie(): String = exportedCookie
@@ -152,6 +156,15 @@ internal open class RecordingRednoteGateway(
 
     fun enqueueUserNotes(userId: String, vararg pages: RednoteUserNotesPage) {
         userNotesPages.getOrPut(userId) { mutableListOf() }.addAll(pages)
+    }
+
+    override suspend fun fetchLiveSnapshot(userId: String): RednoteLiveSnapshot {
+        fetchedLiveUserIds += userId
+        return liveSnapshots[userId] ?: RednoteLiveSnapshot(userId = userId)
+    }
+
+    fun setLiveSnapshot(userId: String, snapshot: RednoteLiveSnapshot) {
+        liveSnapshots[userId] = snapshot
     }
 }
 
@@ -188,6 +201,23 @@ internal class InMemoryRednoteCursorStore(
     fun contains(publisherId: Int): Boolean = publisherId in cursors
 }
 
+internal class InMemoryRednoteLiveStatusStore(
+    initial: Map<Int, PublisherLiveStatus> = emptyMap(),
+) : RednoteLiveStatusStore {
+    private val states: MutableMap<Int, PublisherLiveStatus> = initial.toMutableMap()
+
+    override fun get(publisherId: Int): PublisherLiveStatus? = states[publisherId]
+
+    override fun save(state: PublisherLiveStatus): PublisherLiveStatus {
+        states[state.publisherId] = state
+        return state
+    }
+
+    override fun evict(publisherId: Int) {
+        states.remove(publisherId)
+    }
+}
+
 internal class RecordingSourceUpdatePublisher : SourceUpdatePublisher {
     val requests: MutableList<SourceUpdatePublishRequest> = mutableListOf()
     var nextResult: SourceUpdatePublishResult = SourceUpdatePublishResult.enqueued(1)
@@ -200,9 +230,10 @@ internal class RecordingSourceUpdatePublisher : SourceUpdatePublisher {
 
 internal class FixedSubscriptionQueryService(
     publishers: List<Publisher>,
+    policy: SubscriptionPolicy = SubscriptionPolicy.default(),
 ) : SubscriptionQueryService {
     var snapshots: List<PublisherSubscribers> = publishers.mapIndexed { index, publisher ->
-        publisherSnapshot(publisher, index + 1)
+        publisherSnapshot(publisher, index + 1, policy)
     }
 
     override fun findActivePublisherWithSubscribersById(publisherId: Int): PublisherSubscribers? {
@@ -214,7 +245,11 @@ internal class FixedSubscriptionQueryService(
     }
 }
 
-internal fun publisherSnapshot(publisher: Publisher, index: Int): PublisherSubscribers {
+internal fun publisherSnapshot(
+    publisher: Publisher,
+    index: Int,
+    policy: SubscriptionPolicy = SubscriptionPolicy.default(),
+): PublisherSubscribers {
     val subscriber = Subscriber(
         id = index,
         address = TargetAddress.of("onebot", TargetKind.GROUP, "1000"),
@@ -233,11 +268,38 @@ internal fun publisherSnapshot(publisher: Publisher, index: Int): PublisherSubsc
                     publisherId = publisher.id,
                     createdAtEpochSeconds = 1,
                     updatedAtEpochSeconds = 1,
-                    policy = SubscriptionPolicy.default(),
+                    policy = policy,
                 ),
                 subscriber = subscriber,
             )
         ),
+    )
+}
+
+internal fun livePolicy(): SubscriptionPolicy {
+    return SubscriptionPolicy(
+        enabledEvents = setOf(
+            SubscriptionEventKind.LIVE_STARTED,
+            SubscriptionEventKind.LIVE_ENDED,
+        ),
+    )
+}
+
+internal fun testLiveSnapshot(
+    userId: String,
+    roomId: String = "room-$userId",
+    status: LiveStatus = LiveStatus.CLOSE,
+    title: String = "小红书直播",
+    coverUrl: String? = "https://example.com/live-cover.jpg",
+    startedAt: Long? = null,
+): RednoteLiveSnapshot {
+    return RednoteLiveSnapshot(
+        userId = userId,
+        roomId = roomId,
+        status = status,
+        title = title,
+        coverUrl = coverUrl,
+        startedAtEpochSeconds = startedAt,
     )
 }
 

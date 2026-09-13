@@ -3,6 +3,7 @@ package com.incubator4.dynamic.rednote
 import com.sun.net.httpserver.HttpServer
 import kotlinx.coroutines.runBlocking
 import top.colter.dynamic.core.plugin.PublisherLoginStatus
+import top.colter.dynamic.core.data.LiveStatus
 import java.net.InetSocketAddress
 import java.net.URI
 import java.net.http.HttpClient
@@ -94,6 +95,39 @@ class RednoteClientTest {
             val page = client.fetchUserNotes("64abc")
             assertEquals("64abc", requestedUserId)
             assertEquals(listOf("n1"), page.notes.map { it.noteId })
+        } finally {
+            server.stop(0)
+        }
+    }
+
+    @Test
+    fun `live snapshot is fetched from user otherinfo`() = runBlocking {
+        val server = HttpServer.create(InetSocketAddress(0), 0)
+        var requestedUserId: String? = null
+        server.createContext("/api/sns/web/v1/user/otherinfo") { exchange ->
+            requestedUserId = exchange.requestURI.query
+                ?.split("&")
+                ?.firstOrNull { it.startsWith("target_user_id=") }
+                ?.substringAfter("=")
+            val body = """
+                {"code":0,"success":true,"data":{"basic_info":{"user_id":"64abc"},"live":{"room_id":"54123","title":"直播中的房间","cover":"https://example.com/live.jpg"}}}
+            """.trimIndent()
+            val bytes = body.toByteArray()
+            exchange.sendResponseHeaders(200, bytes.size.toLong())
+            exchange.responseBody.use { it.write(bytes) }
+        }
+        server.start()
+        try {
+            val client = RednoteClient(
+                config = RednotePublisherConfig(cookie = "web_session=valid"),
+                httpClient = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(2)).build(),
+                userOtherInfoUri = URI.create("http://127.0.0.1:${server.address.port}/api/sns/web/v1/user/otherinfo"),
+            )
+            val live = client.fetchLiveSnapshot("64abc")
+            assertEquals("64abc", requestedUserId)
+            assertEquals("54123", live.roomId)
+            assertEquals(LiveStatus.OPEN, live.status)
+            assertEquals("直播中的房间", live.title)
         } finally {
             server.stop(0)
         }

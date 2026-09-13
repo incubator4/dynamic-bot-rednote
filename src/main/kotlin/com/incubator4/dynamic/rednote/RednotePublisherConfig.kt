@@ -10,6 +10,7 @@ public data class RednotePublisherConfig(
     val pollingIntervalSeconds: Double = 60.0,
     val requestIntervalSeconds: Double = 1.0,
     val replayWindowMinutes: Int = 0,
+    val liveDetectionEnabled: Boolean = true,
     val maxConsecutiveLoginFailures: Int = 3,
     val cookie: String = "",
 )
@@ -17,14 +18,14 @@ public data class RednotePublisherConfig(
 public object RednotePublisherConfigForm {
     public val spec: ConfigFormSpec = ConfigFormSpec(
         title = "小红书动态源",
-        description = "小红书账号最新笔记轮询、登录状态与请求风控配置。",
+        description = "小红书账号最新笔记与直播轮询、登录状态与请求风控配置。",
         fields = listOf(
             ConfigFieldSpec(
                 path = "pollingEnabled",
                 label = "启用轮询",
                 type = ConfigFieldType.BOOLEAN,
                 section = "轮询与风控",
-                description = "开启后按配置间隔检测已订阅小红书用户的新笔记；关闭时插件仍可用于登录和后续资料查询。",
+                description = "开启后按配置间隔检测已订阅小红书用户的新笔记和直播状态；关闭时插件仍可用于登录和后续资料查询。",
                 restartRequired = true,
                 restartTarget = "小红书插件",
             ),
@@ -33,7 +34,7 @@ public object RednotePublisherConfigForm {
                 label = "轮询间隔（秒）",
                 type = ConfigFieldType.NUMBER,
                 section = "轮询与风控",
-                description = "多久检查一次已订阅小红书用户的新笔记。建议不要低于 60 秒。",
+                description = "多久检查一次已订阅小红书用户的新笔记和直播状态。建议不要低于 60 秒。",
                 min = 60,
                 restartRequired = true,
                 restartTarget = "小红书插件",
@@ -56,6 +57,13 @@ public object RednotePublisherConfigForm {
                 description = "启动后补发最近一段时间的新笔记；设为 0 时只记录当前位置，避免首次推送旧内容。",
                 min = 0,
                 numberKind = ConfigNumberKind.INTEGER,
+            ),
+            ConfigFieldSpec(
+                path = "liveDetectionEnabled",
+                label = "直播检测",
+                type = ConfigFieldType.BOOLEAN,
+                section = "笔记与直播",
+                description = "是否检测开播和下播。关闭后只检测笔记，不再产生直播开始和直播结束事件。",
             ),
             ConfigFieldSpec(
                 path = "maxConsecutiveLoginFailures",

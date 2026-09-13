@@ -63,9 +63,9 @@ Cookie 只存在用户本机的 `config/`，不进 git，不写进文档示例�
 
 In：Cookie 登录、用户 ID 查资料、笔记轮询、`DynamicPayload` 映射、游标、风控暂停、配置表单；宜做链接解析。
 
-Out：用户名搜索、自动关注、直播、视频下载、插件独立后台页、出口协议、第二套推送通道。
+Out：用户名搜索、自动关注、视频下载、插件独立后台页、出口协议、第二套推送通道。
 
-订阅键使用小红书用户 ID。用户名 / 小红书号搜索另开 ADR。
+订阅键使用小红书用户 ID。用户名 / 小红书号搜索另开 ADR。直播开播/下播见 [ADR-0009](#adr-0009-直播开播与下播订阅)。
 
 ## ADR-0007: 构建与 API 版本
 
@@ -88,3 +88,23 @@ Out：用户名搜索、自动关注、直播、视频下载、插件独立后�
 本仓库 Maven / Gradle `group` 是 `com.incubator4.dynamic`。Kotlin 源码、测试和 `plugin.yml` `mainClass` 使用 `com.incubator4.dynamic.rednote`。
 
 不要使用官方插件风格的 `top.colter.dynamic.rednote`。`dynamic-bot-core` 依赖坐标仍是 `top.colter.dynamic:dynamic-bot-core`。生成的 `GitVersion.kt` 放在 `group` 包 `com.incubator4.dynamic`。
+
+## ADR-0009: 直播开播与下播订阅
+
+- Status: Accepted
+- Date: 2026-09-13
+- Supersedes: ADR-0006 中「不做直播」的边界
+
+在已有笔记订阅之外，支持小红书直播的开播 / 下播提醒。对齐 [dynamic-bot-bilibili](https://github.com/Colter23/dynamic-bot-bilibili) 的直播状态模型，而不是另做独立直播源插件。
+
+| 项 | 约定 |
+| --- | --- |
+| 订阅键 | 仍用小红书用户 ID，不另引入直播间 ID 作为发布者 |
+| 事件 | `live.started` / `live.ended`，载荷为 `LivePayload` |
+| 谁会被轮询 | 仅 `SubscriptionPolicy` 启用了 `LIVE_STARTED` 或 `LIVE_ENDED` 的发布者 |
+| 检测方式 | 复用已有用户资料接口读取直播态；没有批量直播接口，不额外发明高频轮询 |
+| 启动 | 先记下当前开播/未开播状态，不把「已经在播」当成新开播补发 |
+| 游标 | 直播状态走 `sourceStateStore.saveLiveStatus`；发布 `FAILED` 时不得覆盖旧状态 |
+| 配置 | `liveDetectionEnabled` 默认开启；仍受 `pollingEnabled` 与 ≥60s / ≥1s 间隔约束 |
+
+不做：直播流下载、弹幕、回放、按直播间 ID 搜索、扫全站正在直播列表。

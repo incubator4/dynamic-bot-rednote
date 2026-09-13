@@ -1,6 +1,7 @@
 package com.incubator4.dynamic.rednote
 
 import kotlinx.coroutines.delay
+import top.colter.dynamic.core.data.LiveStatus
 import top.colter.dynamic.core.plugin.PublisherLoginResult
 import top.colter.dynamic.core.plugin.PublisherLoginStatus
 import java.net.URLEncoder
@@ -58,6 +59,16 @@ internal data class RednoteUserNotesPage(
     val hasMore: Boolean = false,
 )
 
+internal data class RednoteLiveSnapshot(
+    val userId: String,
+    val roomId: String = "",
+    val status: LiveStatus = LiveStatus.CLOSE,
+    val title: String = "",
+    val coverUrl: String? = null,
+    val area: String? = null,
+    val startedAtEpochSeconds: Long? = null,
+)
+
 internal interface RednoteGateway {
     fun exportCookie(): String = ""
 
@@ -76,6 +87,10 @@ internal interface RednoteGateway {
 
     suspend fun enrichNote(note: RednoteNoteSnapshot): RednoteNoteSnapshot {
         return note
+    }
+
+    suspend fun fetchLiveSnapshot(userId: String): RednoteLiveSnapshot {
+        return RednoteLiveSnapshot(userId = userId)
     }
 }
 
@@ -109,6 +124,12 @@ internal class RednoteHttpGateway(
         }
     }
 
+    override suspend fun fetchLiveSnapshot(userId: String): RednoteLiveSnapshot {
+        return withRequestInterval {
+            client.fetchLiveSnapshot(userId)
+        }
+    }
+
     private suspend fun <T> withRequestInterval(block: suspend () -> T): T {
         return try {
             block()
@@ -133,4 +154,9 @@ internal fun noteLink(noteId: String, xsecToken: String? = null): String {
 
 internal fun userProfileLink(userId: String): String {
     return "$REDNOTE_HOME/user/profile/$userId"
+}
+
+internal fun liveRoomLink(roomId: String): String {
+    val normalized = roomId.trim()
+    return if (normalized.isBlank()) REDNOTE_LIVE_HOME else "$REDNOTE_LIVE_HOME/$normalized"
 }
