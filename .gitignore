@@ -1,0 +1,16 @@
+.gradle
+/build/
+!/gradle/wrapper/gradle-wrapper.jar
+.kotlin
+.idea/
+*.iml
+out/
+
+lib
+dist
+/cache
+/data
+/temp
+external
+
+dynamic-bot/
