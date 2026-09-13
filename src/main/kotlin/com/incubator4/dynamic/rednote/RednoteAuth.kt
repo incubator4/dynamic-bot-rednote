@@ -1,6 +1,5 @@
 package com.incubator4.dynamic.rednote
 
-import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
@@ -19,10 +18,10 @@ import java.util.LinkedHashMap
 internal const val REDNOTE_PLATFORM_ID: String = "rednote"
 internal const val REDNOTE_HOME: String = "https://www.xiaohongshu.com"
 internal const val REDNOTE_USER_ME_URL: String = "https://edith.xiaohongshu.com/api/sns/web/v2/user/me"
-
-internal val REDNOTE_JSON: Json = Json {
-    ignoreUnknownKeys = true
-}
+internal const val REDNOTE_USER_OTHERINFO_URL: String = "https://edith.xiaohongshu.com/api/sns/web/v1/user/otherinfo"
+internal const val REDNOTE_USER_POSTED_URL: String = "https://edith.xiaohongshu.com/api/sns/web/v1/user_posted"
+internal const val REDNOTE_FEED_URL: String = "https://edith.xiaohongshu.com/api/sns/web/v1/feed"
+internal const val REDNOTE_DEFAULT_AVATAR: String = "https://www.xiaohongshu.com/favicon.ico"
 
 internal open class RednoteApiException(
     message: String,
@@ -76,9 +75,7 @@ internal fun mergeRednoteCookieHeaders(vararg headers: String?): String {
 }
 
 internal fun parseRednoteUserMe(json: String): RednoteUserMeSnapshot {
-    val root = runCatching { REDNOTE_JSON.parseToJsonElement(json).jsonObject }.getOrElse {
-        throw RednoteApiException("小红书登录状态响应不是有效 JSON")
-    }
+    val root = parseJsonObject(json, "小红书登录状态响应不是有效 JSON")
     val data = root["data"] as? JsonObject
     return RednoteUserMeSnapshot(
         code = root["code"]?.jsonPrimitive?.longOrNull,
@@ -219,22 +216,3 @@ private fun parseCookieJsonObject(raw: String): RednoteCookieSet {
     return RednoteCookieSet(values)
 }
 
-private fun JsonObject.string(vararg keys: String): String? {
-    keys.forEach { key ->
-        val primitive = this[key] as? JsonPrimitive ?: return@forEach
-        val value = primitive.contentOrNull?.trim()?.takeIf { it.isNotBlank() }
-        if (value != null) return value
-    }
-    return null
-}
-
-private fun JsonObject.boolean(key: String): Boolean? {
-    val primitive = this[key] as? JsonPrimitive ?: return null
-    return primitive.booleanOrNull
-}
-
-private fun firstHttpUrl(vararg urls: String?): String? {
-    return urls.firstOrNull { url ->
-        url?.startsWith("http://") == true || url?.startsWith("https://") == true
-    }
-}

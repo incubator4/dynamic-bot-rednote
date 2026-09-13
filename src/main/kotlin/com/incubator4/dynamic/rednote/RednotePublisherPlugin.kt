@@ -2,11 +2,15 @@ package com.incubator4.dynamic.rednote
 
 import top.colter.dynamic.core.config.ConfigApplyResult
 import top.colter.dynamic.core.config.ConfigurablePlugin
+import top.colter.dynamic.core.data.PlatformDescriptor
 import top.colter.dynamic.core.data.PlatformId
+import top.colter.dynamic.core.data.PublisherInfo
+import top.colter.dynamic.core.event.SubscriptionChangedEvent
 import top.colter.dynamic.core.plugin.PluginContext
 import top.colter.dynamic.core.plugin.PublisherLoginMethod
 import top.colter.dynamic.core.plugin.PublisherLoginProvider
 import top.colter.dynamic.core.plugin.PublisherLoginResult
+import top.colter.dynamic.core.plugin.PublisherLookupPlugin
 import top.colter.dynamic.core.plugin.PublisherQrLoginChallenge
 import top.colter.dynamic.core.plugin.PublisherSourcePlugin
 import top.colter.dynamic.core.task.TaskScheduler
@@ -15,6 +19,7 @@ public class RednotePublisherPlugin private constructor(
     private val runtime: RednotePublisherRuntime,
 ) :
     PublisherSourcePlugin,
+    PublisherLookupPlugin,
     PublisherLoginProvider,
     ConfigurablePlugin<RednotePublisherConfig> {
 
@@ -25,17 +30,21 @@ public class RednotePublisherPlugin private constructor(
         gatewayFactory: (RednotePublisherConfig) -> RednoteGateway,
         saveConfig: (String, RednotePublisherConfig) -> Unit = { _, _ -> },
         taskScheduler: TaskScheduler,
+        cursorStoreFactory: (() -> RednoteCursorStore)? = null,
     ) : this(
         RednotePublisherRuntime(
             loadConfig = loadConfig,
             gatewayFactory = gatewayFactory,
             saveConfig = saveConfig,
             taskScheduler = taskScheduler,
+            cursorStoreFactory = cursorStoreFactory,
         ),
     )
 
     override val platformId: PlatformId
         get() = runtime.platformId
+    override val platformDescriptor: PlatformDescriptor
+        get() = runtime.platformDescriptor
 
     override val configId: String
         get() = runtime.configId
@@ -75,6 +84,10 @@ public class RednotePublisherPlugin private constructor(
         return runtime.applyConfig(next)
     }
 
+    override suspend fun fetchPublisherInfo(userId: String): PublisherInfo? {
+        return runtime.fetchPublisherInfo(userId)
+    }
+
     override suspend fun checkLoginState(): PublisherLoginResult {
         return runtime.checkLoginState()
     }
@@ -92,5 +105,9 @@ public class RednotePublisherPlugin private constructor(
 
     override suspend fun exportCookie(): String? {
         return runtime.exportCookie()
+    }
+
+    override suspend fun onSubscriptionChanged(event: SubscriptionChangedEvent) {
+        runtime.onSubscriptionChanged(event)
     }
 }

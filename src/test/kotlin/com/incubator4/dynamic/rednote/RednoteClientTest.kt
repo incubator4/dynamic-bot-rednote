@@ -66,4 +66,36 @@ class RednoteClientTest {
         assertEquals(PublisherLoginStatus.FAILED, result.status)
         assertTrue(result.message.contains("登录状态不可用"))
     }
+
+    @Test
+    fun `user posted notes are fetched from list endpoint`() = runBlocking {
+        val server = HttpServer.create(InetSocketAddress(0), 0)
+        var requestedUserId: String? = null
+        server.createContext("/api/sns/web/v1/user_posted") { exchange ->
+            requestedUserId = exchange.requestURI.query
+                ?.split("&")
+                ?.firstOrNull { it.startsWith("user_id=") }
+                ?.substringAfter("=")
+            val body = """
+                {"code":0,"success":true,"data":{"notes":[{"note_id":"n1","display_title":"笔记","type":"normal","user":{"user_id":"64abc"}}],"has_more":false}}
+            """.trimIndent()
+            val bytes = body.toByteArray()
+            exchange.sendResponseHeaders(200, bytes.size.toLong())
+            exchange.responseBody.use { it.write(bytes) }
+        }
+        server.start()
+        try {
+            val port = server.address.port
+            val client = RednoteClient(
+                config = RednotePublisherConfig(cookie = "web_session=valid"),
+                httpClient = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(2)).build(),
+                userPostedUri = URI.create("http://127.0.0.1:$port/api/sns/web/v1/user_posted"),
+            )
+            val page = client.fetchUserNotes("64abc")
+            assertEquals("64abc", requestedUserId)
+            assertEquals(listOf("n1"), page.notes.map { it.noteId })
+        } finally {
+            server.stop(0)
+        }
+    }
 }

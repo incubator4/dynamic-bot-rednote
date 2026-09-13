@@ -3,6 +3,10 @@ package com.incubator4.dynamic.rednote
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.add
+import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import top.colter.dynamic.core.plugin.PublisherLoginResult
 import top.colter.dynamic.core.plugin.PublisherLoginStatus
 import top.colter.dynamic.core.tools.loggerFor
@@ -10,6 +14,7 @@ import java.net.CookieManager
 import java.net.CookiePolicy
 import java.net.HttpCookie
 import java.net.URI
+import java.net.URLEncoder
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
@@ -22,6 +27,9 @@ internal class RednoteClient(
     private val config: RednotePublisherConfig,
     private val httpClient: HttpClient = defaultHttpClient(config.cookie),
     private val userMeUri: URI = URI.create(REDNOTE_USER_ME_URL),
+    private val userOtherInfoUri: URI = URI.create(REDNOTE_USER_OTHERINFO_URL),
+    private val userPostedUri: URI = URI.create(REDNOTE_USER_POSTED_URL),
+    private val feedUri: URI = URI.create(REDNOTE_FEED_URL),
 ) {
     suspend fun checkLoginState(): PublisherLoginResult {
         val cookieHeader = currentCookieHeader()
@@ -43,6 +51,55 @@ internal class RednoteClient(
                 message = error.message ?: "小红书登录状态检查失败",
             )
         }
+    }
+
+    suspend fun fetchPublisherSnapshot(userId: String): RednotePublisherSnapshot? {
+        val normalized = userId.trim().takeIf { it.isNotBlank() } ?: return null
+        val response = sendGet(
+            uri = uriWithQuery(userOtherInfoUri, mapOf("target_user_id" to normalized)),
+        )
+        val body = requireJsonBody(response, "小红书用户资料")
+        return parseRednotePublisher(body)
+    }
+
+    suspend fun fetchUserNotes(userId: String, cursor: String? = null): RednoteUserNotesPage {
+        val normalized = userId.trim()
+        require(normalized.isNotBlank()) { "小红书用户 ID 不能为空" }
+        val response = sendGet(
+            uri = uriWithQuery(
+                userPostedUri,
+                mapOf(
+                    "num" to USER_NOTES_PAGE_SIZE.toString(),
+                    "cursor" to cursor.orEmpty(),
+                    "user_id" to normalized,
+                    "image_formats" to "jpg,webp,avif",
+                ),
+            ),
+        )
+        val body = requireJsonBody(response, "小红书用户笔记")
+        return parseRednoteUserNotesPage(body, normalized)
+    }
+
+    suspend fun enrichNote(note: RednoteNoteSnapshot): RednoteNoteSnapshot {
+        val payload = buildJsonObject {
+            put("source_note_id", note.noteId)
+            put("image_formats", buildJsonArray {
+                add("jpg")
+                add("webp")
+                add("avif")
+            })
+            put(
+                "extra",
+                buildJsonObject {
+                    put("need_body_topic", "1")
+                },
+            )
+            put("xsec_source", "pc_user")
+            note.xsecToken?.takeIf { it.isNotBlank() }?.let { put("xsec_token", it) }
+        }
+        val response = sendPost(feedUri, payload.toString())
+        val body = requireJsonBody(response, "小红书笔记详情")
+        return parseRednoteNoteDetail(body, note)
     }
 
     fun exportCookieHeader(): String = currentCookieHeader()
@@ -84,18 +141,67 @@ internal class RednoteClient(
     }
 
     private suspend fun fetchUserMe(cookieHeader: String): HttpResponse<String> {
-        val request = HttpRequest.newBuilder(userMeUri)
-            .timeout(Duration.ofSeconds(15))
-            .header("Accept", "application/json, text/plain, */*")
-            .header("Accept-Language", "zh-CN,zh;q=0.9")
-            .header("User-Agent", DESKTOP_USER_AGENT)
-            .header("Origin", REDNOTE_HOME)
-            .header("Referer", "$REDNOTE_HOME/")
-            .header("Cookie", cookieHeader)
-            .GET()
-            .build()
+        return send(
+            HttpRequest.newBuilder(userMeUri)
+                .timeout(Duration.ofSeconds(15))
+                .GET()
+                .applyCommonHeaders(cookieHeader)
+                .build(),
+        )
+    }
+
+    private suspend fun sendGet(uri: URI): HttpResponse<String> {
+        return send(
+            HttpRequest.newBuilder(uri)
+                .timeout(Duration.ofSeconds(15))
+                .GET()
+                .applyCommonHeaders(currentCookieHeader())
+                .build(),
+        )
+    }
+
+    private suspend fun sendPost(uri: URI, jsonBody: String): HttpResponse<String> {
+        return send(
+            HttpRequest.newBuilder(uri)
+                .timeout(Duration.ofSeconds(15))
+                .header("Content-Type", "application/json;charset=UTF-8")
+                .POST(HttpRequest.BodyPublishers.ofString(jsonBody, StandardCharsets.UTF_8))
+                .applyCommonHeaders(currentCookieHeader())
+                .build(),
+        )
+    }
+
+    private suspend fun send(request: HttpRequest): HttpResponse<String> {
+        requireCookieConfigured()
         return withContext(Dispatchers.IO) {
             httpClient.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8))
+        }
+    }
+
+    private fun requireJsonBody(response: HttpResponse<String>, operation: String): String {
+        val statusCode = response.statusCode()
+        val body = response.body().orEmpty()
+        if (statusCode == 401 || statusCode == 403) {
+            throw RednoteLoginException("小红书登录状态不可用：HTTP $statusCode")
+        }
+        if (looksLikeRiskControl(code = null, message = "", httpStatus = statusCode)) {
+            throw RednoteBlockedException(
+                "小红书请求疑似被风控（HTTP $statusCode），已停止继续尝试。请稍后再试或更新 Cookie。",
+            )
+        }
+        if (statusCode !in 200..299) {
+            throw RednoteApiException("${operation}失败：HTTP $statusCode")
+        }
+        val trimmed = body.trim()
+        if (trimmed.isEmpty() || looksLikeHtml(trimmed)) {
+            throw RednoteLoginException("小红书登录状态不可用：当前会话没有返回 JSON")
+        }
+        return trimmed
+    }
+
+    private fun requireCookieConfigured() {
+        if (currentCookieHeader().isBlank()) {
+            throw RednoteLoginException("小红书 Cookie 未配置")
         }
     }
 
@@ -113,8 +219,7 @@ internal class RednoteClient(
     }
 
     companion object {
-        private const val DESKTOP_USER_AGENT: String =
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36 Edg/149.0.0.0"
+        private const val USER_NOTES_PAGE_SIZE: Int = 30
 
         internal fun defaultHttpClient(cookie: String): HttpClient {
             val cookieManager = CookieManager(null, CookiePolicy.ACCEPT_ALL)
@@ -132,6 +237,30 @@ internal class RednoteClient(
                 .build()
         }
     }
+}
+
+private fun HttpRequest.Builder.applyCommonHeaders(cookieHeader: String): HttpRequest.Builder {
+    header("Accept", "application/json, text/plain, */*")
+    header("Accept-Language", "zh-CN,zh;q=0.9")
+    header("User-Agent", DESKTOP_USER_AGENT)
+    header("Origin", REDNOTE_HOME)
+    header("Referer", "$REDNOTE_HOME/")
+    if (cookieHeader.isNotBlank()) {
+        header("Cookie", cookieHeader)
+    }
+    return this
+}
+
+private const val DESKTOP_USER_AGENT: String =
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36 Edg/149.0.0.0"
+
+private fun uriWithQuery(base: URI, params: Map<String, String>): URI {
+    val encoded = params.entries.joinToString("&") { (key, value) ->
+        "${URLEncoder.encode(key, StandardCharsets.UTF_8)}=${URLEncoder.encode(value, StandardCharsets.UTF_8)}"
+    }
+    val raw = base.toString()
+    val joiner = if (raw.contains('?')) "&" else "?"
+    return URI.create("$raw$joiner$encoded")
 }
 
 private fun looksLikeHtml(body: String): Boolean {
