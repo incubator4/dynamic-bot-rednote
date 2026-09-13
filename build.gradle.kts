@@ -1,8 +1,8 @@
 import org.gradle.kotlin.dsl.kotlin
 
 plugins {
-    kotlin("jvm") version "2.4.0"
-    kotlin("plugin.serialization") version "2.4.0"
+    kotlin("jvm") version "2.4.20"
+    kotlin("plugin.serialization") version "2.4.20"
 }
 
 apply(from = "gradle/dynamic-plugin-fatjar.gradle.kts")
@@ -84,15 +84,15 @@ repositories {
 }
 
 configurations.named("testRuntimeClasspath") {
-    resolutionStrategy.force("org.slf4j:slf4j-api:2.0.18")
+    resolutionStrategy.force("org.slf4j:slf4j-api:2.0.19")
 }
 
 dependencies {
     val coroutinesVersion = "1.11.0"
     val coreVersion = "0.0.4"
     val kotlinLoggingVersion = "8.0.4"
-    val log4jVersion = "2.26.0"
-    val slf4jVersion = "2.0.18"
+    val log4jVersion = "2.26.1"
+    val slf4jVersion = "2.0.19"
 
     val serializationVersion = "1.11.0"
 
@@ -109,7 +109,7 @@ dependencies {
     testImplementation("org.apache.logging.log4j:log4j-api:$log4jVersion")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:$coroutinesVersion")
     testRuntimeOnly("org.slf4j:slf4j-api:$slf4jVersion")
-    testRuntimeOnly("ch.qos.logback:logback-classic:1.5.34")
+    testRuntimeOnly("ch.qos.logback:logback-classic:1.6.3")
     testRuntimeOnly("org.apache.logging.log4j:log4j-to-slf4j:$log4jVersion")
 }
 
