@@ -39,17 +39,17 @@ dynamic-bot 主程序（订阅、过滤、绘图、outbox、重试）
 ## 建议包与资源
 
 ```text
-src/main/kotlin/top/colter/dynamic/rednote/
+src/main/kotlin/com/incubator4/dynamic/rednote/
 src/main/resources/plugin.yml
 src/main/resources/draw/rednote/logo/
-src/test/kotlin/top/colter/dynamic/rednote/
+src/test/kotlin/com/incubator4/dynamic/rednote/
 ```
 
 `plugin.yml` 目标：
 
 ```yaml
 id: rednote-publisher
-mainClass: top.colter.dynamic.rednote.RednotePublisherPlugin
+mainClass: com.incubator4.dynamic.rednote.RednotePublisherPlugin
 apiVersion: 3.0.0
 ```
 

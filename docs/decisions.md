@@ -28,9 +28,10 @@
 | 仓库 / 产品名 | `dynamic-bot-rednote` |
 | `plugin.yml` `id` | `rednote-publisher` |
 | `PlatformId` | `rednote` |
-| 包名 | `top.colter.dynamic.rednote` |
+| Gradle `group` | `com.incubator4.dynamic` |
+| 包名 | `com.incubator4.dynamic.rednote` |
 
-对外文案用「小红书」。用户可见配置和错误信息用中文。标识符不用 `xhs` 或 `xiaohongshu`，避免和仓库名分裂。
+对外文案用「小红书」。用户可见配置和错误信息用中文。标识符不用 `xhs` 或 `xiaohongshu`，避免和仓库名分裂。包名跟本仓库 Gradle `group`，不要抄官方插件的 `top.colter.dynamic.*`。
 
 ## ADR-0004: 登录以 Cookie 为先
 
@@ -78,3 +79,12 @@ Out：用户名搜索、自动关注、直播、视频下载、插件独立后�
 - 本地若有 `../dynamic-bot-core`，composite build
 
 升级 core 时同步改本 ADR 的版本号，并跑官方插件同风格的边界测试（禁止 import 宿主内部包）。
+
+## ADR-0008: Kotlin 包名跟随 Gradle group
+
+- Status: Accepted
+- Date: 2026-09-13
+
+本仓库 Maven / Gradle `group` 是 `com.incubator4.dynamic`。Kotlin 源码、测试和 `plugin.yml` `mainClass` 使用 `com.incubator4.dynamic.rednote`。
+
+不要使用官方插件风格的 `top.colter.dynamic.rednote`。`dynamic-bot-core` 依赖坐标仍是 `top.colter.dynamic:dynamic-bot-core`。生成的 `GitVersion.kt` 放在 `group` 包 `com.incubator4.dynamic`。

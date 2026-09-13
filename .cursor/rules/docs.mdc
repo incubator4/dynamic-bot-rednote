@@ -11,3 +11,4 @@ alwaysApply: false
 - 架构或一期范围有变：先在 `docs/decisions.md` 追加或修订 ADR（Accepted / Superseded），再改 `product.md` / `architecture.md`。
 - 提到官方插件时用仓库链接，不要臆造不存在的 core 接口或配置项。
 - 用户可见名称用「小红书」；标识符用 `rednote`。
+- Kotlin 包名写 `com.incubator4.dynamic.rednote`，与 Gradle `group` 一致；不要写成官方插件的 `top.colter.dynamic.*`。

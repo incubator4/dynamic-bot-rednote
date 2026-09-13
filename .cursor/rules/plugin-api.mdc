@@ -14,7 +14,7 @@ alwaysApply: true
 - I/O 和轮询挂在 context 的 `CoroutineScope` / `TaskScheduler` 上。
 - 用户配置走 `ConfigService`；游标和缓存走 `PluginDataStore`。
 - 配置表单、校验错误、用户可见提示用中文。
-- `plugin.yml`：`id: rednote-publisher`，`apiVersion` 与当前 core 一致，能力靠接口推导。
+- `plugin.yml`：`id: rednote-publisher`，`mainClass: com.incubator4.dynamic.rednote.RednotePublisherPlugin`，`apiVersion` 与当前 core 一致，能力靠接口推导。
 
 ```kotlin
 // ❌ BAD: 自己发消息或推进游标

@@ -6,7 +6,9 @@ alwaysApply: false
 
 # Kotlin 插件约定
 
-- 包名：`top.colter.dynamic.rednote`。
+- 包名：`com.incubator4.dynamic.rednote`（对齐 `build.gradle.kts` 的 `group`，不要用官方插件的 `top.colter.dynamic.rednote`）。
+- 源码目录：`src/main/kotlin/com/incubator4/dynamic/rednote/`，测试同路径在 `src/test/kotlin/`。
+- `plugin.yml` `mainClass`：`com.incubator4.dynamic.rednote.RednotePublisherPlugin`。
 - `RednotePublisherPlugin` 只做接口委托；业务在 `RednotePublisherRuntime` 及 Gateway / Mapper / Handler。
 - 默认构造给宿主用；测试用 internal 构造注入 fake gateway、cursor、scheduler。
 - `DynamicPayload` 用有序 `blocks`，`MediaCardBlock.style` 必须显式指定。

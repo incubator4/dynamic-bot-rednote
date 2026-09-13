@@ -1,0 +1,7 @@
+id: rednote-publisher
+name: 小红书动态源插件
+version: ${gitVersion}
+mainClass: com.incubator4.dynamic.rednote.RednotePublisherPlugin
+apiVersion: 3.0.0
+description: 小红书笔记轮询、Cookie 登录与订阅分发。
+author: incubator4

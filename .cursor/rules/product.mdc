@@ -14,4 +14,6 @@ alwaysApply: true
 
 一期范围以 `docs/product.md` 和 `docs/decisions.md` 的 ADR-0006 为准。搜索、关注、二维码、直播、视频下载未立项前不要实现。
 
-改产品范围或平台标识时，先改 `docs/decisions.md`。
+Kotlin 包名与源码目录对齐 Gradle `group`：`com.incubator4.dynamic.rednote`。
+
+改产品范围、平台标识或包名时，先改 `docs/decisions.md`。

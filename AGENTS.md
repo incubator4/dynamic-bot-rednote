@@ -33,3 +33,4 @@ Official reference plugins:
 4. Treat Xiaohongshu as risk-sensitive: conservative intervals, pause on login loss or风控, never hammer per-user APIs.
 5. Never commit cookies, tokens, or harvested session files. Config form labels and user-visible errors stay in 中文.
 6. Record architecture and product-scope changes in `docs/decisions.md`. Do not invent core APIs; look them up in `dynamic-bot-core`.
+7. Kotlin package and source directories follow Gradle `group` (`com.incubator4.dynamic`) plus `.rednote`: `com.incubator4.dynamic.rednote`. `plugin.yml` `mainClass` must match. Do not use the official-plugin package `top.colter.dynamic.rednote`.

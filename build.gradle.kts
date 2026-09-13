@@ -94,9 +94,11 @@ dependencies {
     val log4jVersion = "2.26.0"
     val slf4jVersion = "2.0.18"
 
+    val serializationVersion = "1.11.0"
+
     compileOnly("top.colter.dynamic:dynamic-bot-core:$coreVersion")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:$coroutinesVersion")
-    implementation("org.java-websocket:Java-WebSocket:1.6.0")
+    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:$serializationVersion")
 
     compileOnly("io.github.oshai:kotlin-logging-jvm:$kotlinLoggingVersion")
     compileOnly("org.apache.logging.log4j:log4j-api:$log4jVersion")
