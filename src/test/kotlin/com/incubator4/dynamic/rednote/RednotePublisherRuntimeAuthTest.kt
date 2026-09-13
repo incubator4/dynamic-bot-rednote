@@ -37,7 +37,7 @@ class RednotePublisherRuntimeAuthTest {
         assertEquals("web_session=valid; a1=token", savedConfig?.cookie)
         assertEquals("web_session=valid; a1=token", runtime.exportCookie())
         assertTrue(PublisherLoginMethod.COOKIE in runtime.supportedLoginMethods)
-        assertFalse(PublisherLoginMethod.QR_CODE in runtime.supportedLoginMethods)
+        assertTrue(PublisherLoginMethod.QR_CODE in runtime.supportedLoginMethods)
 
         gateway.loginResult = PublisherLoginResult(PublisherLoginStatus.FAILED, "游客会话")
         val failed = runtime.loginByCookie("web_session=guest")
@@ -46,7 +46,7 @@ class RednotePublisherRuntimeAuthTest {
     }
 
     @Test
-    fun `empty cookie and qr login stay failed or unsupported`() = runBlocking {
+    fun `empty cookie login stays failed`() = runBlocking {
         val runtime = RednotePublisherRuntime(
             loadConfig = { RednotePublisherConfig() },
             gatewayFactory = { RecordingRednoteGateway() },
@@ -57,10 +57,6 @@ class RednotePublisherRuntimeAuthTest {
         val empty = runtime.loginByCookie("   ")
         assertEquals(PublisherLoginStatus.FAILED, empty.status)
         assertTrue(empty.message.contains("Cookie"))
-
-        val qr = runtime.loginByQrCode(onQrCode = {}, onStatusChanged = {})
-        assertEquals(PublisherLoginStatus.UNSUPPORTED, qr.status)
-        assertTrue(qr.message.contains("二维码"))
     }
 
     @Test
@@ -125,7 +121,10 @@ class RednotePublisherRuntimeAuthTest {
 
         val result = plugin.loginByCookie("web_session=ok")
         assertEquals(PublisherLoginStatus.SUCCESS, result.status)
-        assertEquals(setOf(PublisherLoginMethod.COOKIE), plugin.supportedLoginMethods)
+        assertEquals(
+            setOf(PublisherLoginMethod.COOKIE, PublisherLoginMethod.QR_CODE),
+            plugin.supportedLoginMethods,
+        )
         assertTrue(plugin.supportsCookieExport)
         assertEquals("web_session=ok", plugin.exportCookie())
     }

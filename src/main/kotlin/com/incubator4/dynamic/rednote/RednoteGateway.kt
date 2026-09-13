@@ -4,6 +4,7 @@ import kotlinx.coroutines.delay
 import top.colter.dynamic.core.data.LiveStatus
 import top.colter.dynamic.core.plugin.PublisherLoginResult
 import top.colter.dynamic.core.plugin.PublisherLoginStatus
+import top.colter.dynamic.core.plugin.PublisherQrLoginChallenge
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 
@@ -79,6 +80,18 @@ internal interface RednoteGateway {
         )
     }
 
+    suspend fun loginByQrCode(
+        onQrCode: suspend (PublisherQrLoginChallenge) -> Unit,
+        onStatusChanged: suspend (PublisherLoginResult) -> Unit = { _ -> },
+        pollIntervalMs: Long = REDNOTE_QR_POLL_INTERVAL_MILLIS,
+        timeoutMs: Long = REDNOTE_QR_TIMEOUT_MILLIS,
+    ): PublisherLoginResult {
+        return PublisherLoginResult(
+            status = PublisherLoginStatus.UNSUPPORTED,
+            message = "不支持小红书二维码登录",
+        )
+    }
+
     suspend fun fetchPublisherSnapshot(userId: String): RednotePublisherSnapshot? = null
 
     suspend fun fetchUserNotes(userId: String, cursor: String? = null): RednoteUserNotesPage {
@@ -103,6 +116,32 @@ internal class RednoteHttpGateway(
     override suspend fun checkLoginState(): PublisherLoginResult {
         return withRequestInterval {
             client.checkLoginState()
+        }
+    }
+
+    override suspend fun loginByQrCode(
+        onQrCode: suspend (PublisherQrLoginChallenge) -> Unit,
+        onStatusChanged: suspend (PublisherLoginResult) -> Unit,
+        pollIntervalMs: Long,
+        timeoutMs: Long,
+    ): PublisherLoginResult {
+        return safeRunRednoteQrLogin {
+            runRednoteQrLogin(
+                onQrCode = onQrCode,
+                onStatusChanged = onStatusChanged,
+                createChallenge = {
+                    withRequestInterval { client.createQrLoginChallenge() }
+                },
+                pollStatus = { qrId, code ->
+                    withRequestInterval { client.pollQrLoginStatus(qrId, code) }
+                },
+                applyLoginInfo = client::applyQrLoginInfo,
+                verifyLogin = {
+                    withRequestInterval { client.checkLoginState() }
+                },
+                pollIntervalMs = pollIntervalMs,
+                timeoutMs = timeoutMs,
+            )
         }
     }
 

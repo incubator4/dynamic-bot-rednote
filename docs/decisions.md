@@ -35,10 +35,10 @@
 
 ## ADR-0004: 登录以 Cookie 为先
 
-- Status: Accepted
+- Status: Accepted（扫码登录见 [ADR-0010](#adr-0010-支持小红书网页扫码登录)）
 - Date: 2026-09-13
 
-`PublisherLoginProvider` 一期只保证 Cookie 登录、登录态检查、登录失效暂停轮询。二维码登录、Cookie 自动刷新、导出 Cookie 都不是 MVP。
+`PublisherLoginProvider` 一期保证 Cookie 登录、登录态检查、登录失效暂停轮询。二维码登录见 ADR-0010。Cookie 自动刷新仍不是 MVP。
 
 Cookie 只存在用户本机的 `config/`，不进 git，不写进文档示例的真实值。
 
@@ -108,3 +108,24 @@ Out：用户名搜索、自动关注、视频下载、插件独立后台页、�
 | 配置 | `liveDetectionEnabled` 默认开启；仍受 `pollingEnabled` 与 ≥60s / ≥1s 间隔约束 |
 
 不做：直播流下载、弹幕、回放、按直播间 ID 搜索、扫全站正在直播列表。
+
+## ADR-0010: 支持小红书网页扫码登录
+
+- Status: Accepted
+- Date: 2026-09-13
+- Supersedes: ADR-0004 中「二维码登录不是 MVP」；ADR-0006 Out 中的「二维码登录」
+
+在 Cookie 登录之外，支持 `PublisherLoginMethod.QR_CODE`：对齐 [dynamic-bot-bilibili](https://github.com/Colter23/dynamic-bot-bilibili) 的 `loginByQrCode` 契约，方便用户在 Web 后台用手机小红书 App 扫码登录。
+
+| 项 | 约定 |
+| --- | --- |
+| 能力声明 | `supportedLoginMethods = {COOKIE, QR_CODE}` |
+| 流程 | 创建二维码 → `onQrCode(PublisherQrLoginChallenge)` → 轮询状态并 `onStatusChanged` → 成功后写入 Cookie 并 `checkLoginState` |
+| 凭证落盘 | 扫码成功得到的会话 Cookie 写入 `ConfigService`（与 Cookie 登录同一字段），不进 git |
+| 轮询节奏 | 状态轮询间隔 ≥1s；二维码有效期约 3 分钟，超时返回 `EXPIRED` |
+| 中间态 | 未扫码 / 已扫码待确认映射为 `PublisherLoginStatus.PENDING` |
+| 失败 | 风控、签名失败、接口异常返回中文 `FAILED` / `EXPIRED`，不加密重试、不绕过校验 |
+
+不做：开放平台 OAuth `app_id`/`app_secret` 设备授权（与现有网页 Cookie 会话模型不兼容）、短信验证码登录、自动刷新过期 Cookie。
+
+Cookie 登录与登录失效暂停轮询仍按 ADR-0004 / ADR-0005 保留。

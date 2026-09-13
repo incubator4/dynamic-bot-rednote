@@ -139,7 +139,10 @@ internal class RednotePublisherRuntime() :
         }
     }
 
-    override val supportedLoginMethods: Set<PublisherLoginMethod> = setOf(PublisherLoginMethod.COOKIE)
+    override val supportedLoginMethods: Set<PublisherLoginMethod> = setOf(
+        PublisherLoginMethod.COOKIE,
+        PublisherLoginMethod.QR_CODE,
+    )
     override val supportsCookieExport: Boolean = true
 
     override suspend fun onLoad(context: PluginContext) {
@@ -316,10 +319,35 @@ internal class RednotePublisherRuntime() :
         onQrCode: suspend (PublisherQrLoginChallenge) -> Unit,
         onStatusChanged: suspend (PublisherLoginResult) -> Unit,
     ): PublisherLoginResult {
-        return PublisherLoginResult(
-            status = PublisherLoginStatus.UNSUPPORTED,
-            message = "一期不支持小红书二维码登录，请使用 Cookie 登录",
-        )
+        val previous = currentConfig()
+        val result = try {
+            gateway.loginByQrCode(onQrCode, onStatusChanged)
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Throwable) {
+            PublisherLoginResult(
+                status = PublisherLoginStatus.FAILED,
+                message = error.message ?: "小红书扫码登录失败",
+            )
+        }
+        if (result.status == PublisherLoginStatus.SUCCESS) {
+            val latestCookie = gateway.exportCookie().trim()
+            if (latestCookie.isNotBlank()) {
+                config = previous.copy(cookie = latestCookie)
+                gateway = gatewayFactory(config)
+            }
+            requestFailureHandler.recordSuccess("扫码登录")
+            if (!persistRuntimeCookieIfChanged()) {
+                saveConfig(pluginId, config)
+            }
+            if (config.pollingEnabled && ::taskScheduler.isInitialized && ::detectTask.isInitialized) {
+                bootstrapLoggedInState()
+            }
+        } else if (result.status != PublisherLoginStatus.PENDING) {
+            config = previous
+            gateway = gatewayFactory(previous)
+        }
+        return result
     }
 
     override suspend fun exportCookie(): String? {
