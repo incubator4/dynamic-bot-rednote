@@ -33,6 +33,7 @@ import top.colter.dynamic.core.plugin.PluginContext
 import top.colter.dynamic.core.plugin.PluginDescriptor
 import top.colter.dynamic.core.plugin.PublisherLoginResult
 import top.colter.dynamic.core.plugin.PublisherLoginStatus
+import top.colter.dynamic.core.plugin.PublisherQrLoginChallenge
 import top.colter.dynamic.core.plugin.SourceStateStore
 import top.colter.dynamic.core.plugin.SubscriptionQueryService
 import top.colter.dynamic.core.task.TaskDefinition
@@ -117,8 +118,19 @@ internal open class RecordingRednoteGateway(
     private val publishers: Map<String, RednotePublisherSnapshot> = emptyMap(),
     private val userNotesPages: MutableMap<String, MutableList<RednoteUserNotesPage>> = mutableMapOf(),
     private val liveSnapshots: MutableMap<String, RednoteLiveSnapshot> = mutableMapOf(),
+    var qrLoginResult: PublisherLoginResult = PublisherLoginResult(
+        status = PublisherLoginStatus.UNSUPPORTED,
+        message = "不支持小红书二维码登录",
+    ),
+    var qrChallenge: PublisherQrLoginChallenge = PublisherQrLoginChallenge(
+        qrContent = "https://www.xiaohongshu.com/login",
+        message = "请使用小红书 App 扫码并确认登录",
+    ),
+    var qrStatusUpdates: List<PublisherLoginResult> = emptyList(),
 ) : RednoteGateway {
     var loginCheckCount: Int = 0
+        private set
+    var qrLoginCount: Int = 0
         private set
     val fetchedUserIds: MutableList<String> = mutableListOf()
     val fetchedLiveUserIds: MutableList<String> = mutableListOf()
@@ -129,6 +141,18 @@ internal open class RecordingRednoteGateway(
     override suspend fun checkLoginState(): PublisherLoginResult {
         loginCheckCount += 1
         return loginResult
+    }
+
+    override suspend fun loginByQrCode(
+        onQrCode: suspend (PublisherQrLoginChallenge) -> Unit,
+        onStatusChanged: suspend (PublisherLoginResult) -> Unit,
+        pollIntervalMs: Long,
+        timeoutMs: Long,
+    ): PublisherLoginResult {
+        qrLoginCount += 1
+        onQrCode(qrChallenge)
+        qrStatusUpdates.forEach { onStatusChanged(it) }
+        return qrLoginResult
     }
 
     override suspend fun fetchPublisherSnapshot(userId: String): RednotePublisherSnapshot? {

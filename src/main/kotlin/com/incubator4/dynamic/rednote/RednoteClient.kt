@@ -30,6 +30,8 @@ internal class RednoteClient(
     private val userOtherInfoUri: URI = URI.create(REDNOTE_USER_OTHERINFO_URL),
     private val userPostedUri: URI = URI.create(REDNOTE_USER_POSTED_URL),
     private val feedUri: URI = URI.create(REDNOTE_FEED_URL),
+    private val qrCreateUri: URI = URI.create(REDNOTE_QR_CREATE_URL),
+    private val qrStatusUri: URI = URI.create(REDNOTE_QR_STATUS_URL),
 ) {
     suspend fun checkLoginState(): PublisherLoginResult {
         val cookieHeader = currentCookieHeader()
@@ -51,6 +53,41 @@ internal class RednoteClient(
                 message = error.message ?: "小红书登录状态检查失败",
             )
         }
+    }
+
+    suspend fun createQrLoginChallenge(
+        nowEpochSeconds: Long = System.currentTimeMillis() / 1_000,
+    ): RednoteQrCodeChallenge {
+        ensureGuestCookies()
+        val body = compactJsonObject(emptyMap())
+        val response = sendSignedPost(
+            absoluteUri = qrCreateUri,
+            signUri = REDNOTE_QR_CREATE_URI,
+            jsonBody = body,
+            requireLoginCookie = false,
+        )
+        val payload = requireJsonBody(response, "小红书二维码创建", requireLoginCookie = false)
+        return parseRednoteQrChallenge(payload, nowEpochSeconds = nowEpochSeconds)
+    }
+
+    suspend fun pollQrLoginStatus(qrId: String, code: String): RednoteQrStatusSnapshot {
+        ensureGuestCookies()
+        val query = mapOf("qr_id" to qrId, "code" to code)
+        val absolute = uriWithQuery(qrStatusUri, query)
+        val signUri = uriWithQuery(URI.create(REDNOTE_QR_STATUS_URI), query).toString()
+        val response = sendSignedGet(
+            absoluteUri = absolute,
+            signUri = signUri,
+            requireLoginCookie = false,
+        )
+        val payload = requireJsonBody(response, "小红书二维码状态", requireLoginCookie = false)
+        return parseRednoteQrStatus(payload)
+    }
+
+    fun applyQrLoginInfo(loginInfo: RednoteQrLoginInfo) {
+        val pairs = loginInfo.toCookiePairs()
+        if (pairs.isEmpty()) return
+        putCookies(pairs)
     }
 
     suspend fun fetchPublisherSnapshot(userId: String): RednotePublisherSnapshot? {
@@ -157,6 +194,7 @@ internal class RednoteClient(
                 .GET()
                 .applyCommonHeaders(cookieHeader)
                 .build(),
+            requireLoginCookie = true,
         )
     }
 
@@ -167,6 +205,7 @@ internal class RednoteClient(
                 .GET()
                 .applyCommonHeaders(currentCookieHeader())
                 .build(),
+            requireLoginCookie = true,
         )
     }
 
@@ -178,17 +217,65 @@ internal class RednoteClient(
                 .POST(HttpRequest.BodyPublishers.ofString(jsonBody, StandardCharsets.UTF_8))
                 .applyCommonHeaders(currentCookieHeader())
                 .build(),
+            requireLoginCookie = true,
         )
     }
 
-    private suspend fun send(request: HttpRequest): HttpResponse<String> {
-        requireCookieConfigured()
+    private suspend fun sendSignedGet(
+        absoluteUri: URI,
+        signUri: String,
+        requireLoginCookie: Boolean,
+    ): HttpResponse<String> {
+        val a1 = cookieValue("a1").orEmpty()
+        val signs = buildRednoteWebSign(uri = signUri, jsonBody = null, a1 = a1)
+        return send(
+            HttpRequest.newBuilder(absoluteUri)
+                .timeout(Duration.ofSeconds(15))
+                .GET()
+                .applyCommonHeaders(currentCookieHeader())
+                .applySignHeaders(signs)
+                .build(),
+            requireLoginCookie = requireLoginCookie,
+        )
+    }
+
+    private suspend fun sendSignedPost(
+        absoluteUri: URI,
+        signUri: String,
+        jsonBody: String,
+        requireLoginCookie: Boolean,
+    ): HttpResponse<String> {
+        val a1 = cookieValue("a1").orEmpty()
+        val signs = buildRednoteWebSign(uri = signUri, jsonBody = jsonBody, a1 = a1)
+        return send(
+            HttpRequest.newBuilder(absoluteUri)
+                .timeout(Duration.ofSeconds(15))
+                .header("Content-Type", "application/json;charset=UTF-8")
+                .POST(HttpRequest.BodyPublishers.ofString(jsonBody, StandardCharsets.UTF_8))
+                .applyCommonHeaders(currentCookieHeader())
+                .applySignHeaders(signs)
+                .build(),
+            requireLoginCookie = requireLoginCookie,
+        )
+    }
+
+    private suspend fun send(
+        request: HttpRequest,
+        requireLoginCookie: Boolean = true,
+    ): HttpResponse<String> {
+        if (requireLoginCookie) {
+            requireCookieConfigured()
+        }
         return withContext(Dispatchers.IO) {
             httpClient.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8))
         }
     }
 
-    private fun requireJsonBody(response: HttpResponse<String>, operation: String): String {
+    private fun requireJsonBody(
+        response: HttpResponse<String>,
+        operation: String,
+        requireLoginCookie: Boolean = true,
+    ): String {
         val statusCode = response.statusCode()
         val body = response.body().orEmpty()
         if (statusCode == 401 || statusCode == 403) {
@@ -199,12 +286,18 @@ internal class RednoteClient(
                 "小红书请求疑似被风控（HTTP $statusCode），已停止继续尝试。请稍后再试或更新 Cookie。",
             )
         }
+        if (statusCode == 406) {
+            throw RednoteApiException("${operation}失败：请求未被接受（HTTP 406），请稍后重试或改用 Cookie 登录")
+        }
         if (statusCode !in 200..299) {
             throw RednoteApiException("${operation}失败：HTTP $statusCode")
         }
         val trimmed = body.trim()
         if (trimmed.isEmpty() || looksLikeHtml(trimmed)) {
-            throw RednoteLoginException("小红书登录状态不可用：当前会话没有返回 JSON")
+            if (requireLoginCookie) {
+                throw RednoteLoginException("小红书登录状态不可用：当前会话没有返回 JSON")
+            }
+            throw RednoteApiException("${operation}失败：响应不是有效 JSON")
         }
         return trimmed
     }
@@ -213,6 +306,43 @@ internal class RednoteClient(
         if (currentCookieHeader().isBlank()) {
             throw RednoteLoginException("小红书 Cookie 未配置")
         }
+    }
+
+    private fun ensureGuestCookies() {
+        val existing = parseRednoteCookieInput(currentCookieHeader()).pairs
+        if (existing.keys.any { it.equals("a1", ignoreCase = true) } &&
+            existing.keys.any { it.equals("webId", ignoreCase = true) }
+        ) {
+            return
+        }
+        val guest = generateRednoteGuestIdentity()
+        val next = linkedMapOf<String, String>()
+        existing.forEach { (name, value) -> next[name] = value }
+        if (!next.keys.any { it.equals("a1", ignoreCase = true) }) {
+            next["a1"] = guest.a1
+        }
+        if (!next.keys.any { it.equals("webId", ignoreCase = true) }) {
+            next["webId"] = guest.webId
+        }
+        putCookies(next)
+    }
+
+    private fun putCookies(pairs: Map<String, String>) {
+        val cookieManager = httpClient.cookieHandler().orElse(null) as? CookieManager ?: return
+        pairs.forEach { (name, value) ->
+            if (name.isBlank()) return@forEach
+            val parsed = HttpCookie(name, value).apply {
+                domain = ".xiaohongshu.com"
+                path = "/"
+            }
+            cookieManager.cookieStore.add(URI.create(REDNOTE_HOME), parsed)
+        }
+    }
+
+    private fun cookieValue(name: String): String? {
+        return parseRednoteCookieInput(currentCookieHeader()).pairs.entries
+            .firstOrNull { it.key.equals(name, ignoreCase = true) }
+            ?.value
     }
 
     private fun currentCookieHeader(): String {
@@ -258,6 +388,13 @@ private fun HttpRequest.Builder.applyCommonHeaders(cookieHeader: String): HttpRe
     if (cookieHeader.isNotBlank()) {
         header("Cookie", cookieHeader)
     }
+    return this
+}
+
+private fun HttpRequest.Builder.applySignHeaders(signs: RednoteWebSignHeaders): HttpRequest.Builder {
+    header("X-s", signs.xS)
+    header("X-t", signs.xT)
+    header("X-S-Common", signs.xSCommon)
     return this
 }
 

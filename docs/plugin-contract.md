@@ -10,7 +10,7 @@
 | --- | --- |
 | `PublisherSourcePlugin` | 来源插件身份；轮询后 `sourceUpdatePublisher.publish` |
 | `PublisherLookupPlugin` | 用外部用户 ID 取 `PublisherInfo` |
-| `PublisherLoginProvider` | Cookie 登录、检查登录态；一期可不做二维码 |
+| `PublisherLoginProvider` | Cookie / 扫码登录、检查登录态（见 ADR-0010） |
 | `ConfigurablePlugin` | 后台配置表单，文案用中文 |
 | `LinkResolver` | 一期宜做；匹配并解析小红书链接 |
 
