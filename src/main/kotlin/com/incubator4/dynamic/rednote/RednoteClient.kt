@@ -92,8 +92,10 @@ internal class RednoteClient(
 
     suspend fun fetchPublisherSnapshot(userId: String): RednotePublisherSnapshot? {
         val normalized = userId.trim().takeIf { it.isNotBlank() } ?: return null
-        val response = sendGet(
-            uri = uriWithQuery(userOtherInfoUri, mapOf("target_user_id" to normalized)),
+        val response = sendXywSignedGet(
+            absoluteBaseUri = userOtherInfoUri,
+            apiPath = REDNOTE_USER_OTHERINFO_URI,
+            params = linkedMapOf("target_user_id" to normalized),
         )
         val body = requireJsonBody(response, "小红书用户资料")
         return parseRednotePublisher(body)
@@ -102,15 +104,14 @@ internal class RednoteClient(
     suspend fun fetchUserNotes(userId: String, cursor: String? = null): RednoteUserNotesPage {
         val normalized = userId.trim()
         require(normalized.isNotBlank()) { "小红书用户 ID 不能为空" }
-        val response = sendGet(
-            uri = uriWithQuery(
-                userPostedUri,
-                mapOf(
-                    "num" to USER_NOTES_PAGE_SIZE.toString(),
-                    "cursor" to cursor.orEmpty(),
-                    "user_id" to normalized,
-                    "image_formats" to "jpg,webp,avif",
-                ),
+        val response = sendXywSignedGet(
+            absoluteBaseUri = userPostedUri,
+            apiPath = REDNOTE_USER_POSTED_URI,
+            params = linkedMapOf(
+                "num" to USER_NOTES_PAGE_SIZE.toString(),
+                "cursor" to cursor.orEmpty(),
+                "user_id" to normalized,
+                "image_formats" to "jpg,webp,avif",
             ),
         )
         val body = requireJsonBody(response, "小红书用户笔记")
@@ -134,7 +135,12 @@ internal class RednoteClient(
             put("xsec_source", "pc_user")
             note.xsecToken?.takeIf { it.isNotBlank() }?.let { put("xsec_token", it) }
         }
-        val response = sendPost(feedUri, payload.toString())
+        val jsonBody = payload.toString()
+        val response = sendXywSignedPost(
+            absoluteUri = feedUri,
+            apiPath = REDNOTE_FEED_URI,
+            jsonBody = jsonBody,
+        )
         val body = requireJsonBody(response, "小红书笔记详情")
         return parseRednoteNoteDetail(body, note)
     }
@@ -142,8 +148,10 @@ internal class RednoteClient(
     suspend fun fetchLiveSnapshot(userId: String): RednoteLiveSnapshot {
         val normalized = userId.trim()
         require(normalized.isNotBlank()) { "小红书用户 ID 不能为空" }
-        val response = sendGet(
-            uri = uriWithQuery(userOtherInfoUri, mapOf("target_user_id" to normalized)),
+        val response = sendXywSignedGet(
+            absoluteBaseUri = userOtherInfoUri,
+            apiPath = REDNOTE_USER_OTHERINFO_URI,
+            params = linkedMapOf("target_user_id" to normalized),
         )
         val body = requireJsonBody(response, "小红书直播状态")
         return parseRednoteLiveSnapshot(body, normalized)
@@ -198,24 +206,41 @@ internal class RednoteClient(
         )
     }
 
-    private suspend fun sendGet(uri: URI): HttpResponse<String> {
+    private suspend fun sendXywSignedGet(
+        absoluteBaseUri: URI,
+        apiPath: String,
+        params: Map<String, String?>,
+    ): HttpResponse<String> {
+        val contentString = buildRednoteGetContentString(apiPath, params)
+        val a1 = cookieValue("a1").orEmpty()
+        val signs = buildRednoteXywSign(contentString = contentString, a1 = a1)
+        val absoluteUri = absoluteUriWithSignedQuery(absoluteBaseUri, contentString)
         return send(
-            HttpRequest.newBuilder(uri)
+            HttpRequest.newBuilder(absoluteUri)
                 .timeout(Duration.ofSeconds(15))
                 .GET()
                 .applyCommonHeaders(currentCookieHeader())
+                .applySignHeaders(signs)
                 .build(),
             requireLoginCookie = true,
         )
     }
 
-    private suspend fun sendPost(uri: URI, jsonBody: String): HttpResponse<String> {
+    private suspend fun sendXywSignedPost(
+        absoluteUri: URI,
+        apiPath: String,
+        jsonBody: String,
+    ): HttpResponse<String> {
+        val contentString = apiPath + jsonBody
+        val a1 = cookieValue("a1").orEmpty()
+        val signs = buildRednoteXywSign(contentString = contentString, a1 = a1)
         return send(
-            HttpRequest.newBuilder(uri)
+            HttpRequest.newBuilder(absoluteUri)
                 .timeout(Duration.ofSeconds(15))
                 .header("Content-Type", "application/json;charset=UTF-8")
                 .POST(HttpRequest.BodyPublishers.ofString(jsonBody, StandardCharsets.UTF_8))
                 .applyCommonHeaders(currentCookieHeader())
+                .applySignHeaders(signs)
                 .build(),
             requireLoginCookie = true,
         )
@@ -408,6 +433,20 @@ private fun uriWithQuery(base: URI, params: Map<String, String>): URI {
     val raw = base.toString()
     val joiner = if (raw.contains('?')) "&" else "?"
     return URI.create("$raw$joiner$encoded")
+}
+
+/**
+ * Attach the already-signed query from [contentString] onto [base] without re-encoding,
+ * so the HTTP URL matches the XYW content string.
+ */
+private fun absoluteUriWithSignedQuery(base: URI, contentString: String): URI {
+    val query = contentString.substringAfter('?', missingDelimiterValue = "")
+    val rawBase = base.toString().substringBefore('?')
+    return if (query.isEmpty()) {
+        URI.create(rawBase)
+    } else {
+        URI.create("$rawBase?$query")
+    }
 }
 
 private fun looksLikeHtml(body: String): Boolean {
