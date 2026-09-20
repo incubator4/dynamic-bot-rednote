@@ -24,6 +24,18 @@ class RednoteAuthTest {
         val obj = parseRednoteCookieInput("""{"web_session":"map-session","a1":"map-a1"}""")
         assertEquals("web_session=map-session; a1=map-a1", obj.header)
         assertTrue(parseRednoteCookieInput("   ").isEmpty())
+
+        val aliased = parseRednoteCookieInput("a1=token; web_session=abc; secure_session=sec")
+        assertEquals("a1=token; web_session=abc; web_session_sec=sec", aliased.header)
+        assertTrue(aliased.has("web_session_sec"))
+        assertFalse(aliased.has("secure_session"))
+
+        val cliJson = parseRednoteCookieInput(
+            """{"a1":"cli-a1","web_session":"cli-sess","web_session_sec":"cli-sec","saved_at":1710000000.5}""",
+        )
+        assertEquals("a1=cli-a1; web_session=cli-sess; web_session_sec=cli-sec", cliJson.header)
+        assertTrue(cliJson.missingRequiredLoginCookies().isEmpty())
+        assertEquals(listOf("a1"), parseRednoteCookieInput("web_session=only").missingRequiredLoginCookies())
     }
 
     @Test
@@ -72,6 +84,19 @@ class RednoteAuthTest {
         assertTrue(blocked.message.contains("风控"))
         assertTrue(looksLikeRiskControl(300012, "请求被风控拦截", httpStatus = 200))
         assertTrue(looksLikeRiskControl(null, "", httpStatus = 461))
+    }
+
+    @Test
+    fun `guest identity follows xiaohongshu-cli hex layout`() {
+        val guest = generateRednoteGuestIdentity(
+            random = kotlin.random.Random(1),
+            epochMillis = 1_729_214_251_341L,
+        )
+        assertEquals(52, guest.a1.length)
+        assertTrue(guest.a1.all { it in '0'..'9' || it in 'a'..'f' })
+        assertTrue(guest.a1.contains("1729214251341"))
+        assertEquals(32, guest.webId.length)
+        assertTrue(guest.webId.all { it in '0'..'9' || it in 'a'..'f' })
     }
 
     @Test

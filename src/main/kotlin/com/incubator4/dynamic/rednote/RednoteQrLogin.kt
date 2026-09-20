@@ -6,16 +6,26 @@ import top.colter.dynamic.core.plugin.PublisherLoginResult
 import top.colter.dynamic.core.plugin.PublisherLoginStatus
 import top.colter.dynamic.core.plugin.PublisherQrLoginChallenge
 
+internal const val REDNOTE_QR_ACTIVATE_URL: String =
+    "https://edith.xiaohongshu.com/api/sns/web/v1/login/activate"
 internal const val REDNOTE_QR_CREATE_URL: String =
     "https://edith.xiaohongshu.com/api/sns/web/v1/login/qrcode/create"
+internal const val REDNOTE_QR_USERINFO_URL: String =
+    "https://edith.xiaohongshu.com/api/qrcode/userinfo"
 internal const val REDNOTE_QR_STATUS_URL: String =
     "https://edith.xiaohongshu.com/api/sns/web/v1/login/qrcode/status"
+internal const val REDNOTE_QR_ACTIVATE_URI: String = "/api/sns/web/v1/login/activate"
 internal const val REDNOTE_QR_CREATE_URI: String = "/api/sns/web/v1/login/qrcode/create"
+internal const val REDNOTE_QR_USERINFO_URI: String = "/api/qrcode/userinfo"
 internal const val REDNOTE_QR_STATUS_URI: String = "/api/sns/web/v1/login/qrcode/status"
+internal const val REDNOTE_QR_USERINFO_SERVICE_TAG: String = "webcn"
 
-internal const val REDNOTE_QR_EXPIRES_SECONDS: Long = 180
+internal const val REDNOTE_QR_EXPIRES_SECONDS: Long = 240
 internal const val REDNOTE_QR_POLL_INTERVAL_MILLIS: Long = 2_000
-internal const val REDNOTE_QR_TIMEOUT_MILLIS: Long = 180_000
+internal const val REDNOTE_QR_TIMEOUT_MILLIS: Long = 240_000
+internal const val REDNOTE_QR_COMPLETE_RETRIES: Int = 5
+internal const val REDNOTE_QR_COMPLETE_RETRY_MILLIS: Long = 1_000
+internal const val REDNOTE_QR_POLL_ERROR_LIMIT: Int = 3
 
 internal enum class RednoteQrCodeStatus {
     WAITING,
@@ -44,8 +54,13 @@ internal data class RednoteQrStatusSnapshot(
     val success: Boolean? = null,
     val message: String? = null,
     val codeStatus: Int? = null,
+    val userId: String? = null,
     val loginInfo: RednoteQrLoginInfo? = null,
-)
+) {
+    fun confirmedUserId(): String? {
+        return userId?.takeIf { it.isNotBlank() } ?: loginInfo?.userId?.takeIf { it.isNotBlank() }
+    }
+}
 
 internal fun parseRednoteQrChallenge(
     json: String,
@@ -71,20 +86,44 @@ internal fun parseRednoteQrChallenge(
 
 internal fun parseRednoteQrStatus(json: String): RednoteQrStatusSnapshot {
     val root = parseJsonObject(json, "小红书二维码状态响应不是有效 JSON")
-    val data = root.obj("data")
-    val login = data?.obj("login_info", "loginInfo")
+    val data = root.obj("data") ?: root
+    val login = data.obj("login_info", "loginInfo")
     return RednoteQrStatusSnapshot(
         code = root.long("code"),
         success = root.boolean("success"),
-        message = root.string("msg", "message"),
-        codeStatus = data?.int("code_status", "codeStatus"),
-        loginInfo = login?.let {
-            RednoteQrLoginInfo(
-                session = it.string("session"),
-                secureSession = it.string("secure_session", "secureSession"),
-                userId = it.string("user_id", "userId"),
-            )
-        },
+        message = root.string("msg", "message") ?: data.string("msg", "message"),
+        codeStatus = data.int("code_status", "codeStatus") ?: root.int("code_status", "codeStatus"),
+        userId = data.string("user_id", "userId", "userid")
+            ?: login?.string("user_id", "userId", "userid"),
+        loginInfo = parseRednoteQrLoginInfo(data),
+    )
+}
+
+internal fun parseRednoteActivateSession(json: String): RednoteQrLoginInfo {
+    val root = parseJsonObject(json, "小红书登录激活响应不是有效 JSON")
+    val data = root.obj("data") ?: root
+    return parseRednoteQrLoginInfo(data) ?: RednoteQrLoginInfo(
+        session = data.string("session", "web_session"),
+        secureSession = data.string("secure_session", "secureSession", "web_session_sec"),
+        userId = data.string("user_id", "userId", "userid"),
+    )
+}
+
+internal fun parseRednoteQrLoginInfo(payload: JsonObject): RednoteQrLoginInfo? {
+    val login = payload.obj("login_info", "loginInfo")
+    val session = payload.string("session", "web_session")
+        ?: login?.string("session", "web_session")
+    val secureSession = payload.string("secure_session", "secureSession", "web_session_sec")
+        ?: login?.string("secure_session", "secureSession", "web_session_sec")
+    val userId = payload.string("user_id", "userId", "userid")
+        ?: login?.string("user_id", "userId", "userid")
+    if (session.isNullOrBlank() && secureSession.isNullOrBlank() && userId.isNullOrBlank() && login == null) {
+        return null
+    }
+    return RednoteQrLoginInfo(
+        session = session,
+        secureSession = secureSession,
+        userId = userId,
     )
 }
 
@@ -96,7 +135,7 @@ internal fun RednoteQrCodeChallenge.toPublisherChallenge(
         expiresAtEpochSeconds = expiresAtEpochSeconds,
         message = "请使用小红书 App 扫码并确认登录",
         instruction = "请使用小红书 App 扫码并确认登录",
-        validityHint = "三分钟内有效",
+        validityHint = "四分钟内有效",
         statusPollIntervalMillis = pollIntervalMillis,
     )
 }
@@ -167,8 +206,12 @@ internal fun RednoteQrCodeStatus.toPublisherLoginResult(
 internal fun RednoteQrLoginInfo.toCookiePairs(): Map<String, String> {
     val values = linkedMapOf<String, String>()
     session?.trim()?.takeIf { it.isNotEmpty() }?.let { values["web_session"] = it }
-    secureSession?.trim()?.takeIf { it.isNotEmpty() }?.let { values["secure_session"] = it }
+    secureSession?.trim()?.takeIf { it.isNotEmpty() }?.let { values["web_session_sec"] = it }
     return values
+}
+
+internal fun RednoteQrLoginInfo.hasSessionCookie(): Boolean {
+    return !session.isNullOrBlank() || !secureSession.isNullOrBlank()
 }
 
 private fun looksLikeExpired(message: String): Boolean {

@@ -57,6 +57,10 @@ class RednotePublisherRuntimeAuthTest {
         val empty = runtime.loginByCookie("   ")
         assertEquals(PublisherLoginStatus.FAILED, empty.status)
         assertTrue(empty.message.contains("Cookie"))
+
+        val missingA1 = runtime.loginByCookie("web_session=only")
+        assertEquals(PublisherLoginStatus.FAILED, missingA1.status)
+        assertTrue(missingA1.message.contains("a1"))
     }
 
     @Test
@@ -119,7 +123,7 @@ class RednotePublisherRuntimeAuthTest {
         )
         plugin.onLoad(testContext())
 
-        val result = plugin.loginByCookie("web_session=ok")
+        val result = plugin.loginByCookie("web_session=ok; a1=token")
         assertEquals(PublisherLoginStatus.SUCCESS, result.status)
         assertEquals(
             setOf(PublisherLoginMethod.COOKIE, PublisherLoginMethod.QR_CODE),

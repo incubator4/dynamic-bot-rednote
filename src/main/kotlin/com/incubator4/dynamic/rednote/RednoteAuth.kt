@@ -66,18 +66,57 @@ internal data class RednoteUserMeSnapshot(
     val avatarUrl: String? = null,
 )
 
+internal val REDNOTE_REQUIRED_LOGIN_COOKIES: List<String> = listOf("a1", "web_session")
+
 internal fun parseRednoteCookieInput(raw: String): RednoteCookieSet {
     val trimmed = raw.trim()
     if (trimmed.isBlank()) return RednoteCookieSet(emptyMap())
-    return when {
+    val parsed = when {
         trimmed.startsWith("[") -> parseCookieJsonArray(trimmed)
         trimmed.startsWith("{") -> parseCookieJsonObject(trimmed)
         else -> parseCookieHeader(trimmed)
     }
+    return RednoteCookieSet(canonicalizeRednoteCookies(parsed.pairs))
 }
 
 internal fun mergeRednoteCookieHeaders(vararg headers: String?): String {
-    return parseCookieHeader(headers.filterNotNull().joinToString("; ")).header
+    return RednoteCookieSet(
+        canonicalizeRednoteCookies(parseCookieHeader(headers.filterNotNull().joinToString("; ")).pairs),
+    ).header
+}
+
+internal fun RednoteCookieSet.missingRequiredLoginCookies(): List<String> {
+    return REDNOTE_REQUIRED_LOGIN_COOKIES.filter { !has(it) }
+}
+
+internal fun missingRequiredLoginCookieMessage(missing: Collection<String>): String {
+    return "小红书 Cookie 缺少必要字段：${missing.joinToString("、")}。请从浏览器导出包含 a1 和 web_session 的完整 Cookie。"
+}
+
+/**
+ * Align cookie names with the Xiaohongshu web session used by
+ * [xiaohongshu-cli](https://github.com/jackwener/xiaohongshu-cli):
+ * `secure_session` from QR payloads is persisted as `web_session_sec`.
+ */
+internal fun canonicalizeRednoteCookies(pairs: Map<String, String>): Map<String, String> {
+    val values = LinkedHashMap<String, String>()
+    val hasCanonicalSecure = pairs.keys.any { it.equals("web_session_sec", ignoreCase = true) }
+    pairs.forEach { (name, value) ->
+        if (name.isBlank() || value.isBlank()) return@forEach
+        if (name.equals("saved_at", ignoreCase = true)) return@forEach
+        val canonical = when {
+            name.equals("secure_session", ignoreCase = true) -> "web_session_sec"
+            else -> name
+        }
+        if (canonical == "web_session_sec" &&
+            hasCanonicalSecure &&
+            !name.equals("web_session_sec", ignoreCase = true)
+        ) {
+            return@forEach
+        }
+        values[canonical] = value
+    }
+    return values
 }
 
 internal fun parseRednoteUserMe(json: String): RednoteUserMeSnapshot {

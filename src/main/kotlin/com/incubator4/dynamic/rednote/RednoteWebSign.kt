@@ -4,7 +4,6 @@ import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 import java.util.Base64
 import java.util.Locale
-import java.util.zip.CRC32
 import javax.crypto.Cipher
 import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
@@ -34,16 +33,22 @@ internal data class RednoteGuestIdentity(
     val webId: String,
 )
 
-internal fun generateRednoteGuestIdentity(random: Random = Random.Default): RednoteGuestIdentity {
-    val alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-    val randomTail = buildString(30) {
-        repeat(30) { append(alphabet[random.nextInt(alphabet.length)]) }
+/**
+ * Guest `a1` / `webId` used to bootstrap QR login, matching
+ * [xiaohongshu-cli](https://github.com/jackwener/xiaohongshu-cli) `_generate_a1` / `_generate_webid`.
+ */
+internal fun generateRednoteGuestIdentity(
+    random: Random = Random.Default,
+    epochMillis: Long = System.currentTimeMillis(),
+): RednoteGuestIdentity {
+    val hex = "0123456789abcdef"
+    fun hexString(length: Int): String = buildString(length) {
+        repeat(length) { append(hex[random.nextInt(hex.length)]) }
     }
-    val prefix = java.lang.Long.toHexString(System.currentTimeMillis()) + randomTail + "50" + "000"
-    val crc = CRC32().also { it.update(prefix.toByteArray(StandardCharsets.UTF_8)) }.value
-    val a1 = (prefix + crc.toString()).take(52)
-    val webId = md5Hex(a1)
-    return RednoteGuestIdentity(a1 = a1, webId = webId)
+    return RednoteGuestIdentity(
+        a1 = hexString(24) + epochMillis.toString() + hexString(15),
+        webId = hexString(32),
+    )
 }
 
 /**

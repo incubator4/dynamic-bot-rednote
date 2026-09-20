@@ -122,7 +122,7 @@ Out：用户名搜索、自动关注、视频下载、插件独立后台页、�
 | 能力声明 | `supportedLoginMethods = {COOKIE, QR_CODE}` |
 | 流程 | 创建二维码 → `onQrCode(PublisherQrLoginChallenge)` → 轮询状态并 `onStatusChanged` → 成功后写入 Cookie 并 `checkLoginState` |
 | 凭证落盘 | 扫码成功得到的会话 Cookie 写入 `ConfigService`（与 Cookie 登录同一字段），不进 git |
-| 轮询节奏 | 状态轮询间隔 ≥1s；二维码有效期约 3 分钟，超时返回 `EXPIRED` |
+| 轮询节奏 | 状态轮询间隔 ≥1s；二维码有效期约 4 分钟，超时返回 `EXPIRED`（对齐 [xiaohongshu-cli](https://github.com/jackwener/xiaohongshu-cli)） |
 | 中间态 | 未扫码 / 已扫码待确认映射为 `PublisherLoginStatus.PENDING` |
 | 失败 | 风控、签名失败、接口异常返回中文 `FAILED` / `EXPIRED`，不加密重试、不绕过校验 |
 
@@ -143,7 +143,7 @@ Cookie 登录与登录失效暂停轮询仍按 ADR-0004 / ADR-0005 保留。
 | 数据接口 | `user_posted` / `otherinfo` / `feed` 请求带 `X-s`=`XYW_…`、`X-t`、`X-S-Common` |
 | 算法来源 | 对齐开源 [xhshow](https://github.com/Cloxl/xhshow) v0.2.0 的 `sign_xyw`（AES-128-CBC） |
 | 签名串 | GET 用 path+query（逗号不编码，与 xhshow `_build_content_string` 一致）；POST 用 path+请求体原文 |
-| 非数据接口 | 二维码 create/status 继续用既有 legacy 签名，不切换 XYW_ |
+| 非数据接口 | 原约定二维码 create/status 用 legacy 签名；已被 [ADR-0013](#adr-0013-对齐-xiaohongshu-cli-的-cookie-与扫码登录) 取代，登录相关接口改走 XYW_ |
 | 失败 | HTTP 406 仍按现有路径报中文错误并暂停重试，不加密绕过 |
 
 原“不做：完整移植 xhshow 的 `XYS_` / `x-rap-param` / 设备指纹 `b1` 流水线”已被 ADR-0012 取代：仅 `feed` 等风控接口补齐 `x-rap-param`，`X-s-common` 对齐 xhshow 新模板并接入 `b1` 指纹，`XYS_` 与搜索接口仍不实现。
@@ -165,3 +165,24 @@ ADR-0011 只补了 `X-s=XYW_…`，实测 `user_posted` / `otherinfo` / `feed` �
 | 接入点 | `RednoteClient.sendXywSignedGet/Post` 统一应用上述头；`enrichNote` 调用 feed 时传 `xRapApi`。`fetchPublisherSnapshot` / `fetchUserNotes` / `fetchLiveSnapshot` 把目标 `userId` 透传给签名，用于 `xy-direction` 分片。 |
 | 仍不做 | `XYS_` 旧签名、搜索/关注/视频下载等未立项接口；不绕过登录态或风控校验，406 仍按既有路径报中文错误并暂停。 |
 | 风险 | `b1` 为简化指纹，若服务端后续强校验完整指纹可能再次 406；届时再按 xhshow 全量字段补齐。 |
+
+## ADR-0013: 对齐 xiaohongshu-cli 的 Cookie 与扫码登录
+
+- Status: Accepted
+- Date: 2026-09-20
+- Related: ADR-0004、ADR-0010、ADR-0011、[jackwener/xiaohongshu-cli](https://github.com/jackwener/xiaohongshu-cli)
+- Supersedes: ADR-0010 中「二维码有效期约 3 分钟」；ADR-0011 中「二维码 create/status 继续用 legacy 签名」
+
+Cookie 登录和网页扫码登录对齐 [xiaohongshu-cli](https://github.com/jackwener/xiaohongshu-cli) 的 HTTP 流程（`xhs_cli/qr_login.py`、`AuthEndpointsMixin`），不引入浏览器自动化。
+
+| 项 | 约定 |
+| --- | --- |
+| Cookie 必要字段 | 导入或校验时至少要有 `a1` 和 `web_session`；缺少时返回中文失败，不发请求 |
+| Cookie 别名 | QR / activate 返回的 `session` → `web_session`，`secure_session` → `web_session_sec`；导入时 `secure_session` 规范成 `web_session_sec` |
+| 登录态检查 | `GET /api/sns/web/v2/user/me` 走 XYW_ 签名，不再发未签名请求 |
+| 扫码流程 | 游客 `a1`/`webId` → `POST /login/activate`（失败不阻断）→ `POST /login/qrcode/create`（`qr_type=1`）→ 轮询 `POST /api/qrcode/userinfo`（`service-tag: webcn`）→ 确认后再 `GET /login/qrcode/status` 取会话 |
+| 扫码会话隔离 | 扫码开始时不用旧配置 Cookie，避免游客会话和旧账号混用 |
+| 完成重试 | 确认后最多 5 次、间隔 ≥1s，直到完成接口或 `user/me` 的用户与确认用户一致 |
+| 有效期 | 轮询超时 240s，与 CLI 一致 |
+| 签名 | 上述登录接口与 `user/me` 一律 XYW_，不再对扫码走 legacy `X-s` |
+| 仍不做 | 不引入 Camoufox/Playwright 浏览器扫码；不绕过风控或登录态；Cookie 自动刷新仍不是 MVP |
