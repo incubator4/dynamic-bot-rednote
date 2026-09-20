@@ -2,14 +2,22 @@ package com.incubator4.dynamic.rednote
 
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
+import java.util.Base64
 import java.util.Locale
 import java.util.zip.CRC32
+import javax.crypto.Cipher
+import javax.crypto.spec.IvParameterSpec
+import javax.crypto.spec.SecretKeySpec
 import kotlin.random.Random
 
 /**
  * Web API request headers expected by Xiaohongshu edith endpoints.
  *
- * Adapted from the MIT-licensed helper in https://github.com/ReaJason/xhs (Copyright (c) 2023 ReaJason).
+ * Legacy `XYS`-style helper adapted from the MIT-licensed code in
+ * https://github.com/ReaJason/xhs (Copyright (c) 2023 ReaJason).
+ *
+ * `XYW_` signing for data-fetching APIs follows the MIT-licensed algorithm in
+ * https://github.com/Cloxl/xhshow (see issue #104 / PR #105).
  */
 internal data class RednoteWebSignHeaders(
     val xS: String,
@@ -34,6 +42,9 @@ internal fun generateRednoteGuestIdentity(random: Random = Random.Default): Redn
     return RednoteGuestIdentity(a1 = a1, webId = webId)
 }
 
+/**
+ * Legacy signing used by non-data endpoints such as QR login.
+ */
 internal fun buildRednoteWebSign(
     uri: String,
     jsonBody: String? = null,
@@ -46,6 +57,133 @@ internal fun buildRednoteWebSign(
     val raw = "${xT}test${uri}${payload}"
     val md5 = md5Hex(raw)
     val xS = encodeXs(md5)
+    return RednoteWebSignHeaders(
+        xS = xS,
+        xT = xT,
+        xSCommon = buildXsCommon(a1 = a1, b1 = b1, xT = xT, xS = xS),
+    )
+}
+
+/**
+ * `XYW_` signing required by data-fetching APIs (`user_posted`, `otherinfo`, `feed`, …)
+ * that reject the older signature format with HTTP 406.
+ *
+ * [contentString] must be the same URI(+query) or URI+JSON body string that the
+ * request will actually send (xhshow `_build_content_string`).
+ */
+internal fun buildRednoteXywSign(
+    contentString: String,
+    a1: String,
+    b1: String = "",
+    appId: String = XYW_APP_ID,
+    epochMillis: Long = System.currentTimeMillis(),
+): RednoteWebSignHeaders {
+    val xT = epochMillis.toString()
+    val xS = signXyw(
+        contentString = contentString,
+        a1 = a1,
+        timestampMs = xT,
+        appId = appId,
+    )
+    return RednoteWebSignHeaders(
+        xS = xS,
+        xT = xT,
+        xSCommon = buildXsCommon(a1 = a1, b1 = b1, xT = xT, xS = xS),
+    )
+}
+
+/**
+ * Build the GET content string used both for XYW signing and as the request query,
+ * matching xhshow's `_build_content_string` / `urllib.parse.quote(..., safe=",")`.
+ */
+internal fun buildRednoteGetContentString(apiPath: String, params: Map<String, String?>): String {
+    if (params.isEmpty()) return apiPath
+    val query = params.entries.joinToString("&") { (key, value) ->
+        "$key=${encodeRednoteSignQueryValue(value.orEmpty())}"
+    }
+    return "$apiPath?$query"
+}
+
+internal fun encodeRednoteSignQueryValue(value: String): String {
+    val bytes = value.toByteArray(StandardCharsets.UTF_8)
+    return buildString(bytes.size * 3) {
+        bytes.forEach { byte ->
+            val code = byte.toInt() and 0xFF
+            if (isRednoteSignQuerySafe(code)) {
+                append(code.toChar())
+            } else {
+                append('%')
+                append(HEX_DIGITS[code ushr 4])
+                append(HEX_DIGITS[code and 0xF])
+            }
+        }
+    }
+}
+
+private fun isRednoteSignQuerySafe(code: Int): Boolean {
+    val ch = code.toChar()
+    return ch in 'A'..'Z' ||
+        ch in 'a'..'z' ||
+        ch in '0'..'9' ||
+        ch == '-' ||
+        ch == '.' ||
+        ch == '_' ||
+        ch == '~' ||
+        ch == ','
+}
+
+private fun signXyw(
+    contentString: String,
+    a1: String,
+    timestampMs: String,
+    appId: String,
+): String {
+    val payloadHex = buildXywPayloadHex(
+        fullUri = contentString,
+        a1 = a1,
+        timestampMs = timestampMs,
+    )
+    val envelope = compactJsonObject(
+        linkedMapOf(
+            "signSvn" to XYW_SIGN_SVN,
+            "signType" to XYW_SIGN_TYPE,
+            "appId" to appId,
+            "signVersion" to XYW_SIGN_VERSION,
+            "payload" to payloadHex,
+        ),
+    )
+    val encoded = Base64.getEncoder().encodeToString(envelope.toByteArray(StandardCharsets.UTF_8))
+    return XYW_PREFIX + encoded
+}
+
+internal fun buildXywPayloadHex(
+    fullUri: String,
+    a1: String,
+    timestampMs: String,
+    envFlags: String = XYW_ENV_FLAGS_DEFAULT,
+): String {
+    val x1 = md5Hex("url=$fullUri")
+    val message = "x1=$x1;x2=$envFlags;x3=$a1;x4=$timestampMs;"
+        .toByteArray(StandardCharsets.UTF_8)
+    val plaintext = Base64.getEncoder().encode(message)
+    val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
+    cipher.init(
+        Cipher.ENCRYPT_MODE,
+        SecretKeySpec(XYW_AES_KEY, "AES"),
+        IvParameterSpec(XYW_AES_IV),
+    )
+    return cipher.doFinal(plaintext).joinToString("") { byte ->
+        val value = byte.toInt() and 0xFF
+        "${HEX_DIGITS[value ushr 4]}${HEX_DIGITS[value and 0xF]}"
+    }.lowercase(Locale.ROOT)
+}
+
+private fun buildXsCommon(
+    a1: String,
+    b1: String,
+    xT: String,
+    xS: String,
+): String {
     val common = buildString {
         append('{')
         append("\"s0\":5,")
@@ -63,12 +201,18 @@ internal fun buildRednoteWebSign(
         append("\"x10\":1")
         append('}')
     }
-    return RednoteWebSignHeaders(
-        xS = xS,
-        xT = xT,
-        xSCommon = customBase64Encode(encodeUtf8(common)),
-    )
+    return customBase64Encode(encodeUtf8(common))
 }
+
+private const val XYW_PREFIX: String = "XYW_"
+private const val XYW_APP_ID: String = "xhs-pc-web"
+private const val XYW_SIGN_SVN: String = "56"
+private const val XYW_SIGN_TYPE: String = "x2"
+private const val XYW_SIGN_VERSION: String = "1"
+private const val XYW_ENV_FLAGS_DEFAULT: String = "0|0|0|1|0|0|1|0|0|0|1|0|0|0|0|1|0|0|1"
+private val XYW_AES_KEY: ByteArray = "7cc4adla5ay0701v".toByteArray(StandardCharsets.UTF_8)
+private val XYW_AES_IV: ByteArray = "4uzjr7mbsibcaldp".toByteArray(StandardCharsets.UTF_8)
+private val HEX_DIGITS: CharArray = "0123456789ABCDEF".toCharArray()
 
 internal fun compactJsonObject(entries: Map<String, Any?>): String {
     if (entries.isEmpty()) return "{}"

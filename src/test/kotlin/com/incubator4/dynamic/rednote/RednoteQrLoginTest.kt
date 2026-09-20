@@ -36,6 +36,45 @@ class RednoteQrLoginTest {
     }
 
     @Test
+    fun `xyw sign matches xhshow vectors for data apis`() {
+        val content = buildRednoteGetContentString(
+            REDNOTE_USER_POSTED_URI,
+            linkedMapOf(
+                "num" to "30",
+                "cursor" to "",
+                "user_id" to "64abc",
+                "image_formats" to "jpg,webp,avif",
+            ),
+        )
+        assertEquals(
+            "/api/sns/web/v1/user_posted?num=30&cursor=&user_id=64abc&image_formats=jpg,webp,avif",
+            content,
+        )
+
+        val payloadHex = buildXywPayloadHex(
+            fullUri = content,
+            a1 = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUV",
+            timestampMs = "1729214251341",
+        )
+        assertEquals(
+            "543e927a2f022aaea44bbdfbdfc67d0d7eb5b0d74f9ce58c5a15806619b82845bd2566223748726fefdf6601ef4eda6e1bd24464640db6e4766b0f35afede5f52271b9b997932456f37ab3b5ab8af6ab84c0da5c007de9041fa7c86ad682db2a3cb4a837fc5b149f183603d6b0437044f844a6548e7c53b4825d88cb42a004e6de7b023917a315a54e4005107c440766c58b7670a317921d318ab5cd04fc43245b2d353aadd1c7ae9a3a058a7a761d0801110216ff1b1ac285f8b847105aefb9f3e1cc0954dd8ccea7add5738d3b4e63",
+            payloadHex,
+        )
+
+        val signed = buildRednoteXywSign(
+            contentString = content,
+            a1 = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUV",
+            epochMillis = 1_729_214_251_341L,
+        )
+        assertEquals("1729214251341", signed.xT)
+        assertEquals(
+            "XYW_eyJzaWduU3ZuIjoiNTYiLCJzaWduVHlwZSI6IngyIiwiYXBwSWQiOiJ4aHMtcGMtd2ViIiwic2lnblZlcnNpb24iOiIxIiwicGF5bG9hZCI6IjU0M2U5MjdhMmYwMjJhYWVhNDRiYmRmYmRmYzY3ZDBkN2ViNWIwZDc0ZjljZTU4YzVhMTU4MDY2MTliODI4NDViZDI1NjYyMjM3NDg3MjZmZWZkZjY2MDFlZjRlZGE2ZTFiZDI0NDY0NjQwZGI2ZTQ3NjZiMGYzNWFmZWRlNWY1MjI3MWI5Yjk5NzkzMjQ1NmYzN2FiM2I1YWI4YWY2YWI4NGMwZGE1YzAwN2RlOTA0MWZhN2M4NmFkNjgyZGIyYTNjYjRhODM3ZmM1YjE0OWYxODM2MDNkNmIwNDM3MDQ0Zjg0NGE2NTQ4ZTdjNTNiNDgyNWQ4OGNiNDJhMDA0ZTZkZTdiMDIzOTE3YTMxNWE1NGU0MDA1MTA3YzQ0MDc2NmM1OGI3NjcwYTMxNzkyMWQzMThhYjVjZDA0ZmM0MzI0NWIyZDM1M2FhZGQxYzdhZTlhM2EwNThhN2E3NjFkMDgwMTExMDIxNmZmMWIxYWMyODVmOGI4NDcxMDVhZWZiOWYzZTFjYzA5NTRkZDhjY2VhN2FkZDU3MzhkM2I0ZTYzIn0=",
+            signed.xS,
+        )
+        assertTrue(signed.xSCommon.isNotBlank())
+    }
+
+    @Test
     fun `qr challenge and status parsing`() {
         val challenge = parseRednoteQrChallenge(
             """

@@ -17,10 +17,14 @@ import java.util.LinkedHashMap
 
 internal const val REDNOTE_PLATFORM_ID: String = "rednote"
 internal const val REDNOTE_HOME: String = "https://www.xiaohongshu.com"
-internal const val REDNOTE_USER_ME_URL: String = "https://edith.xiaohongshu.com/api/sns/web/v2/user/me"
-internal const val REDNOTE_USER_OTHERINFO_URL: String = "https://edith.xiaohongshu.com/api/sns/web/v1/user/otherinfo"
-internal const val REDNOTE_USER_POSTED_URL: String = "https://edith.xiaohongshu.com/api/sns/web/v1/user_posted"
-internal const val REDNOTE_FEED_URL: String = "https://edith.xiaohongshu.com/api/sns/web/v1/feed"
+internal const val REDNOTE_USER_ME_URI: String = "/api/sns/web/v2/user/me"
+internal const val REDNOTE_USER_OTHERINFO_URI: String = "/api/sns/web/v1/user/otherinfo"
+internal const val REDNOTE_USER_POSTED_URI: String = "/api/sns/web/v1/user_posted"
+internal const val REDNOTE_FEED_URI: String = "/api/sns/web/v1/feed"
+internal const val REDNOTE_USER_ME_URL: String = "https://edith.xiaohongshu.com$REDNOTE_USER_ME_URI"
+internal const val REDNOTE_USER_OTHERINFO_URL: String = "https://edith.xiaohongshu.com$REDNOTE_USER_OTHERINFO_URI"
+internal const val REDNOTE_USER_POSTED_URL: String = "https://edith.xiaohongshu.com$REDNOTE_USER_POSTED_URI"
+internal const val REDNOTE_FEED_URL: String = "https://edith.xiaohongshu.com$REDNOTE_FEED_URI"
 internal const val REDNOTE_LIVE_HOME: String = "$REDNOTE_HOME/livestream"
 internal const val REDNOTE_DEFAULT_AVATAR: String = "https://www.xiaohongshu.com/favicon.ico"
 

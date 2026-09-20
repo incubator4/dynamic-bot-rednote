@@ -129,3 +129,21 @@ Out：用户名搜索、自动关注、视频下载、插件独立后台页、�
 不做：开放平台 OAuth `app_id`/`app_secret` 设备授权（与现有网页 Cookie 会话模型不兼容）、短信验证码登录、自动刷新过期 Cookie。
 
 Cookie 登录与登录失效暂停轮询仍按 ADR-0004 / ADR-0005 保留。
+
+## ADR-0011: 数据接口使用 XYW_ 请求签名
+
+- Status: Accepted
+- Date: 2026-09-20
+- Related: [Cloxl/xhshow#104](https://github.com/Cloxl/xhshow/issues/104)、[PR #105](https://github.com/Cloxl/xhshow/pull/105)
+
+小红书 edith 的数据拉取接口（`user_posted`、`user/otherinfo`、`feed` 等）在约 2026-03 后会拒绝旧签名格式并返回 HTTP 406。扫码登录等非数据接口仍可用既有签名。
+
+| 项 | 约定 |
+| --- | --- |
+| 数据接口 | `user_posted` / `otherinfo` / `feed` 请求带 `X-s`=`XYW_…`、`X-t`、`X-S-Common` |
+| 算法来源 | 对齐开源 [xhshow](https://github.com/Cloxl/xhshow) v0.2.0 的 `sign_xyw`（AES-128-CBC） |
+| 签名串 | GET 用 path+query（逗号不编码，与 xhshow `_build_content_string` 一致）；POST 用 path+请求体原文 |
+| 非数据接口 | 二维码 create/status 继续用既有 legacy 签名，不切换 XYW_ |
+| 失败 | HTTP 406 仍按现有路径报中文错误并暂停重试，不加密绕过 |
+
+不做：完整移植 xhshow 的 `XYS_` / `x-rap-param` / 设备指纹 `b1` 流水线；搜索等未立项接口。

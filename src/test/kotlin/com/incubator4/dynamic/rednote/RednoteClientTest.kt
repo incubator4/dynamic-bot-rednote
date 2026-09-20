@@ -72,11 +72,13 @@ class RednoteClientTest {
     fun `user posted notes are fetched from list endpoint`() = runBlocking {
         val server = HttpServer.create(InetSocketAddress(0), 0)
         var requestedUserId: String? = null
+        var requestXs: String? = null
         server.createContext("/api/sns/web/v1/user_posted") { exchange ->
             requestedUserId = exchange.requestURI.query
                 ?.split("&")
                 ?.firstOrNull { it.startsWith("user_id=") }
                 ?.substringAfter("=")
+            requestXs = exchange.requestHeaders.getFirst("X-s")
             val body = """
                 {"code":0,"success":true,"data":{"notes":[{"note_id":"n1","display_title":"笔记","type":"normal","user":{"user_id":"64abc"}}],"has_more":false}}
             """.trimIndent()
@@ -88,13 +90,14 @@ class RednoteClientTest {
         try {
             val port = server.address.port
             val client = RednoteClient(
-                config = RednotePublisherConfig(cookie = "web_session=valid"),
+                config = RednotePublisherConfig(cookie = "web_session=valid; a1=abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUV"),
                 httpClient = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(2)).build(),
                 userPostedUri = URI.create("http://127.0.0.1:$port/api/sns/web/v1/user_posted"),
             )
             val page = client.fetchUserNotes("64abc")
             assertEquals("64abc", requestedUserId)
             assertEquals(listOf("n1"), page.notes.map { it.noteId })
+            assertTrue(requestXs.orEmpty().startsWith("XYW_"))
         } finally {
             server.stop(0)
         }
@@ -104,11 +107,13 @@ class RednoteClientTest {
     fun `live snapshot is fetched from user otherinfo`() = runBlocking {
         val server = HttpServer.create(InetSocketAddress(0), 0)
         var requestedUserId: String? = null
+        var requestXs: String? = null
         server.createContext("/api/sns/web/v1/user/otherinfo") { exchange ->
             requestedUserId = exchange.requestURI.query
                 ?.split("&")
                 ?.firstOrNull { it.startsWith("target_user_id=") }
                 ?.substringAfter("=")
+            requestXs = exchange.requestHeaders.getFirst("X-s")
             val body = """
                 {"code":0,"success":true,"data":{"basic_info":{"user_id":"64abc"},"live":{"room_id":"54123","title":"直播中的房间","cover":"https://example.com/live.jpg"}}}
             """.trimIndent()
@@ -119,7 +124,7 @@ class RednoteClientTest {
         server.start()
         try {
             val client = RednoteClient(
-                config = RednotePublisherConfig(cookie = "web_session=valid"),
+                config = RednotePublisherConfig(cookie = "web_session=valid; a1=abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUV"),
                 httpClient = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(2)).build(),
                 userOtherInfoUri = URI.create("http://127.0.0.1:${server.address.port}/api/sns/web/v1/user/otherinfo"),
             )
@@ -128,6 +133,7 @@ class RednoteClientTest {
             assertEquals("54123", live.roomId)
             assertEquals(LiveStatus.OPEN, live.status)
             assertEquals("直播中的房间", live.title)
+            assertTrue(requestXs.orEmpty().startsWith("XYW_"))
         } finally {
             server.stop(0)
         }
