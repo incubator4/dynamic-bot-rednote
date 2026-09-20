@@ -105,16 +105,19 @@ internal class RednoteClient(
         retryDelayMs: Long = REDNOTE_QR_COMPLETE_RETRY_MILLIS,
         delayMillis: suspend (Long) -> Unit = { kotlinx.coroutines.delay(it) },
     ): RednoteQrLoginInfo {
-        var lastInfo = RednoteQrLoginInfo(userId = confirmedUserId)
+        var lastInfo = RednoteQrLoginInfo()
         repeat(retries.coerceAtLeast(1)) { attempt ->
             val snapshot = fetchQrLoginCompletion(qrId, code)
             snapshot.loginInfo?.let { info ->
                 applyQrLoginInfo(info)
                 lastInfo = info.copy(userId = info.userId ?: lastInfo.userId)
             }
-            val completedUserId = lastInfo.userId?.takeIf { it.isNotBlank() }
-            if (!confirmedUserId.isNullOrBlank() && completedUserId == confirmedUserId) {
-                return lastInfo
+            val completedUserId = snapshot.confirmedUserId()
+            if (!confirmedUserId.isNullOrBlank() &&
+                completedUserId == confirmedUserId &&
+                lastInfo.hasSessionCookie()
+            ) {
+                return lastInfo.copy(userId = completedUserId)
             }
             val selfUserId = runCatching { fetchUserMeSnapshot()?.userId }
                 .getOrNull()

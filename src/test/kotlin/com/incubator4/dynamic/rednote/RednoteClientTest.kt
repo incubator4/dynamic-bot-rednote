@@ -172,6 +172,52 @@ class RednoteClientTest {
     }
 
     @Test
+    fun `complete qr login waits until session cookies arrive`() = runBlocking {
+        val server = HttpServer.create(InetSocketAddress(0), 0)
+        var statusCount = 0
+        server.createContext("/api/sns/web/v1/login/qrcode/status") { exchange ->
+            statusCount += 1
+            val body = if (statusCount == 1) {
+                """{"code":0,"success":true,"data":{"code_status":2,"userId":"u1"}}"""
+            } else {
+                """{"code":0,"success":true,"data":{"code_status":2,"login_info":{"session":"real-sess","secure_session":"real-sec","user_id":"u1"}}}"""
+            }
+            val bytes = body.toByteArray()
+            exchange.sendResponseHeaders(200, bytes.size.toLong())
+            exchange.responseBody.use { it.write(bytes) }
+        }
+        server.createContext("/api/sns/web/v2/user/me") { exchange ->
+            val body = """{"code":0,"success":true,"data":{"guest":true}}"""
+            val bytes = body.toByteArray()
+            exchange.sendResponseHeaders(200, bytes.size.toLong())
+            exchange.responseBody.use { it.write(bytes) }
+        }
+        server.start()
+        try {
+            val port = server.address.port
+            val client = RednoteClient(
+                config = RednotePublisherConfig(cookie = "web_session=guest; a1=token"),
+                userMeUri = URI.create("http://127.0.0.1:$port/api/sns/web/v2/user/me"),
+                qrStatusUri = URI.create("http://127.0.0.1:$port/api/sns/web/v1/login/qrcode/status"),
+            )
+            val completed = client.completeQrLogin(
+                qrId = "qr-1",
+                code = "384516",
+                confirmedUserId = "u1",
+                retries = 3,
+                retryDelayMs = 1_000,
+                delayMillis = {},
+            )
+            assertEquals(2, statusCount)
+            assertEquals("real-sess", completed.session)
+            assertEquals("real-sec", completed.secureSession)
+            assertTrue(client.exportCookieHeader().contains("web_session=real-sess"))
+        } finally {
+            server.stop(0)
+        }
+    }
+
+    @Test
     fun `html login page is treated as login failure`() {
         val result = RednoteClient(RednotePublisherConfig(cookie = "web_session=x"))
             .toLoginResult(200, "<!doctype html><html><title>登录</title></html>")
