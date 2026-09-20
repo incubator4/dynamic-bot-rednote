@@ -13,6 +13,7 @@ internal suspend fun runRednoteQrLogin(
     pollStatus: suspend (qrId: String, code: String) -> RednoteQrStatusSnapshot,
     applyLoginInfo: (RednoteQrLoginInfo) -> Unit,
     verifyLogin: suspend () -> PublisherLoginResult,
+    completeLogin: (suspend (qrId: String, code: String, confirmedUserId: String?) -> RednoteQrLoginInfo)? = null,
     pollIntervalMs: Long = REDNOTE_QR_POLL_INTERVAL_MILLIS,
     timeoutMs: Long = REDNOTE_QR_TIMEOUT_MILLIS,
     delayMillis: suspend (Long) -> Unit = { delay(it) },
@@ -25,22 +26,42 @@ internal suspend fun runRednoteQrLogin(
 
     val deadline = nowMillis() + timeoutMs.coerceAtLeast(1_000)
     var lastStatus = RednoteQrCodeStatus.WAITING
+    var consecutiveErrors = 0
     while (nowMillis() < deadline) {
         delayMillis(boundedPollInterval)
-        val snapshot = pollStatus(challenge.qrId, challenge.code)
+        val snapshot = try {
+            pollStatus(challenge.qrId, challenge.code)
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: RednoteBlockedException) {
+            throw error
+        } catch (error: Throwable) {
+            consecutiveErrors += 1
+            if (consecutiveErrors >= REDNOTE_QR_POLL_ERROR_LIMIT) {
+                throw error
+            }
+            continue
+        }
+        consecutiveErrors = 0
         val status = snapshot.resolveStatus()
         if (status != lastStatus) {
             lastStatus = status
             onStatusChanged(
                 status.toPublisherLoginResult(
                     detail = snapshot.message,
-                    accountUserId = snapshot.loginInfo?.userId,
+                    accountUserId = snapshot.confirmedUserId(),
                 ),
             )
         }
         when (status) {
             RednoteQrCodeStatus.SUCCESS -> {
-                snapshot.loginInfo?.let(applyLoginInfo)
+                val confirmedUserId = snapshot.confirmedUserId()
+                val loginInfo = if (completeLogin != null) {
+                    completeLogin(challenge.qrId, challenge.code, confirmedUserId)
+                } else {
+                    snapshot.loginInfo ?: RednoteQrLoginInfo(userId = confirmedUserId)
+                }
+                applyLoginInfo(loginInfo)
                 val verified = verifyLogin()
                 if (verified.status == PublisherLoginStatus.SUCCESS) {
                     return verified

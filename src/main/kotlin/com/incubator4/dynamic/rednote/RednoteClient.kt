@@ -14,7 +14,6 @@ import java.net.CookieManager
 import java.net.CookiePolicy
 import java.net.HttpCookie
 import java.net.URI
-import java.net.URLEncoder
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
@@ -30,20 +29,32 @@ internal class RednoteClient(
     private val userOtherInfoUri: URI = URI.create(REDNOTE_USER_OTHERINFO_URL),
     private val userPostedUri: URI = URI.create(REDNOTE_USER_POSTED_URL),
     private val feedUri: URI = URI.create(REDNOTE_FEED_URL),
+    private val qrActivateUri: URI = URI.create(REDNOTE_QR_ACTIVATE_URL),
     private val qrCreateUri: URI = URI.create(REDNOTE_QR_CREATE_URL),
+    private val qrUserInfoUri: URI = URI.create(REDNOTE_QR_USERINFO_URL),
     private val qrStatusUri: URI = URI.create(REDNOTE_QR_STATUS_URL),
 ) {
+    private val sessionCookies = LinkedHashMap<String, String>()
+    private var includeConfigCookie: Boolean = true
+
     suspend fun checkLoginState(): PublisherLoginResult {
-        val cookieHeader = currentCookieHeader()
-        if (cookieHeader.isBlank()) {
+        val cookies = parseRednoteCookieInput(currentCookieHeader())
+        if (cookies.isEmpty()) {
             return PublisherLoginResult(
                 status = PublisherLoginStatus.FAILED,
                 message = "小红书 Cookie 未配置",
             )
         }
+        val missing = cookies.missingRequiredLoginCookies()
+        if (missing.isNotEmpty()) {
+            return PublisherLoginResult(
+                status = PublisherLoginStatus.FAILED,
+                message = missingRequiredLoginCookieMessage(missing),
+            )
+        }
 
         return try {
-            val response = fetchUserMe(cookieHeader)
+            val response = fetchUserMe()
             toLoginResult(response.statusCode(), response.body())
         } catch (error: CancellationException) {
             throw error
@@ -58,11 +69,12 @@ internal class RednoteClient(
     suspend fun createQrLoginChallenge(
         nowEpochSeconds: Long = System.currentTimeMillis() / 1_000,
     ): RednoteQrCodeChallenge {
-        ensureGuestCookies()
-        val body = compactJsonObject(emptyMap())
-        val response = sendSignedPost(
+        beginGuestQrSession()
+        runCatching { activateLoginSession() }
+        val body = compactJsonObject(linkedMapOf("qr_type" to 1))
+        val response = sendXywSignedPost(
             absoluteUri = qrCreateUri,
-            signUri = REDNOTE_QR_CREATE_URI,
+            apiPath = REDNOTE_QR_CREATE_URI,
             jsonBody = body,
             requireLoginCookie = false,
         )
@@ -71,17 +83,55 @@ internal class RednoteClient(
     }
 
     suspend fun pollQrLoginStatus(qrId: String, code: String): RednoteQrStatusSnapshot {
-        ensureGuestCookies()
-        val query = mapOf("qr_id" to qrId, "code" to code)
-        val absolute = uriWithQuery(qrStatusUri, query)
-        val signUri = uriWithQuery(URI.create(REDNOTE_QR_STATUS_URI), query).toString()
-        val response = sendSignedGet(
-            absoluteUri = absolute,
-            signUri = signUri,
+        val body = compactJsonObject(linkedMapOf("qrId" to qrId, "code" to code))
+        val response = sendXywSignedPost(
+            absoluteUri = qrUserInfoUri,
+            apiPath = REDNOTE_QR_USERINFO_URI,
+            jsonBody = body,
             requireLoginCookie = false,
+            extraHeaders = mapOf("service-tag" to REDNOTE_QR_USERINFO_SERVICE_TAG),
         )
         val payload = requireJsonBody(response, "小红书二维码状态", requireLoginCookie = false)
-        return parseRednoteQrStatus(payload)
+        val snapshot = parseRednoteQrStatus(payload)
+        snapshot.loginInfo?.takeIf { it.hasSessionCookie() }?.let(::applyQrLoginInfo)
+        return snapshot
+    }
+
+    suspend fun completeQrLogin(
+        qrId: String,
+        code: String,
+        confirmedUserId: String?,
+        retries: Int = REDNOTE_QR_COMPLETE_RETRIES,
+        retryDelayMs: Long = REDNOTE_QR_COMPLETE_RETRY_MILLIS,
+        delayMillis: suspend (Long) -> Unit = { kotlinx.coroutines.delay(it) },
+    ): RednoteQrLoginInfo {
+        var lastInfo = RednoteQrLoginInfo(userId = confirmedUserId)
+        repeat(retries.coerceAtLeast(1)) { attempt ->
+            val snapshot = fetchQrLoginCompletion(qrId, code)
+            snapshot.loginInfo?.let { info ->
+                applyQrLoginInfo(info)
+                lastInfo = info.copy(userId = info.userId ?: lastInfo.userId)
+            }
+            val completedUserId = lastInfo.userId?.takeIf { it.isNotBlank() }
+            if (!confirmedUserId.isNullOrBlank() && completedUserId == confirmedUserId) {
+                return lastInfo
+            }
+            val selfUserId = runCatching { fetchUserMeSnapshot()?.userId }
+                .getOrNull()
+                ?.takeIf { it.isNotBlank() }
+            if (!selfUserId.isNullOrBlank() &&
+                (confirmedUserId.isNullOrBlank() || selfUserId == confirmedUserId)
+            ) {
+                return lastInfo.copy(userId = selfUserId)
+            }
+            if (confirmedUserId.isNullOrBlank() && lastInfo.hasSessionCookie()) {
+                return lastInfo
+            }
+            if (attempt + 1 < retries) {
+                delayMillis(retryDelayMs.coerceAtLeast(1_000))
+            }
+        }
+        throw RednoteApiException("小红书扫码已确认，但未能取得登录会话，请重新扫码")
     }
 
     fun applyQrLoginInfo(loginInfo: RednoteQrLoginInfo) {
@@ -199,15 +249,43 @@ internal class RednoteClient(
         return result
     }
 
-    private suspend fun fetchUserMe(cookieHeader: String): HttpResponse<String> {
-        return send(
-            HttpRequest.newBuilder(userMeUri)
-                .timeout(Duration.ofSeconds(15))
-                .GET()
-                .applyCommonHeaders(cookieHeader)
-                .build(),
-            requireLoginCookie = true,
+    private suspend fun fetchUserMe(): HttpResponse<String> {
+        return sendXywSignedGet(
+            absoluteBaseUri = userMeUri,
+            apiPath = REDNOTE_USER_ME_URI,
+            params = emptyMap(),
         )
+    }
+
+    private suspend fun fetchUserMeSnapshot(): RednoteUserMeSnapshot? {
+        val response = fetchUserMe()
+        if (response.statusCode() !in 200..299) return null
+        val body = response.body().orEmpty().trim()
+        if (body.isEmpty() || looksLikeHtml(body)) return null
+        return parseRednoteUserMe(body)
+    }
+
+    private suspend fun activateLoginSession() {
+        val response = sendXywSignedPost(
+            absoluteUri = qrActivateUri,
+            apiPath = REDNOTE_QR_ACTIVATE_URI,
+            jsonBody = compactJsonObject(emptyMap()),
+            requireLoginCookie = false,
+        )
+        val payload = requireJsonBody(response, "小红书登录激活", requireLoginCookie = false)
+        parseRednoteActivateSession(payload).takeIf { it.hasSessionCookie() }?.let(::applyQrLoginInfo)
+    }
+
+    private suspend fun fetchQrLoginCompletion(qrId: String, code: String): RednoteQrStatusSnapshot {
+        val query = linkedMapOf("qr_id" to qrId, "code" to code)
+        val response = sendXywSignedGet(
+            absoluteBaseUri = qrStatusUri,
+            apiPath = REDNOTE_QR_STATUS_URI,
+            params = query,
+            requireLoginCookie = false,
+        )
+        val payload = requireJsonBody(response, "小红书扫码完成", requireLoginCookie = false)
+        return parseRednoteQrStatus(payload)
     }
 
     private suspend fun sendXywSignedGet(
@@ -215,6 +293,8 @@ internal class RednoteClient(
         apiPath: String,
         params: Map<String, String?>,
         userId: String? = null,
+        requireLoginCookie: Boolean = true,
+        extraHeaders: Map<String, String> = emptyMap(),
     ): HttpResponse<String> {
         val contentString = buildRednoteGetContentString(apiPath, params)
         val a1 = cookieValue("a1").orEmpty()
@@ -226,8 +306,9 @@ internal class RednoteClient(
                 .GET()
                 .applyCommonHeaders(currentCookieHeader())
                 .applySignHeaders(signs)
+                .applyExtraHeaders(extraHeaders)
                 .build(),
-            requireLoginCookie = true,
+            requireLoginCookie = requireLoginCookie,
         )
     }
 
@@ -237,6 +318,8 @@ internal class RednoteClient(
         jsonBody: String,
         userId: String? = null,
         xRapApi: String? = null,
+        requireLoginCookie: Boolean = true,
+        extraHeaders: Map<String, String> = emptyMap(),
     ): HttpResponse<String> {
         val contentString = apiPath + jsonBody
         val a1 = cookieValue("a1").orEmpty()
@@ -247,49 +330,12 @@ internal class RednoteClient(
             .POST(HttpRequest.BodyPublishers.ofString(jsonBody, StandardCharsets.UTF_8))
             .applyCommonHeaders(currentCookieHeader())
             .applySignHeaders(signs)
+            .applyExtraHeaders(extraHeaders)
         // feed / search / publish endpoints require the x-rap-param risk-control header.
         if (xRapApi != null) {
             request.header("x-rap-param", RednoteXrap.build(api = xRapApi, bodyJson = jsonBody))
         }
-        return send(request.build(), requireLoginCookie = true)
-    }
-
-    private suspend fun sendSignedGet(
-        absoluteUri: URI,
-        signUri: String,
-        requireLoginCookie: Boolean,
-    ): HttpResponse<String> {
-        val a1 = cookieValue("a1").orEmpty()
-        val signs = buildRednoteWebSign(uri = signUri, jsonBody = null, a1 = a1)
-        return send(
-            HttpRequest.newBuilder(absoluteUri)
-                .timeout(Duration.ofSeconds(15))
-                .GET()
-                .applyCommonHeaders(currentCookieHeader())
-                .applySignHeaders(signs)
-                .build(),
-            requireLoginCookie = requireLoginCookie,
-        )
-    }
-
-    private suspend fun sendSignedPost(
-        absoluteUri: URI,
-        signUri: String,
-        jsonBody: String,
-        requireLoginCookie: Boolean,
-    ): HttpResponse<String> {
-        val a1 = cookieValue("a1").orEmpty()
-        val signs = buildRednoteWebSign(uri = signUri, jsonBody = jsonBody, a1 = a1)
-        return send(
-            HttpRequest.newBuilder(absoluteUri)
-                .timeout(Duration.ofSeconds(15))
-                .header("Content-Type", "application/json;charset=UTF-8")
-                .POST(HttpRequest.BodyPublishers.ofString(jsonBody, StandardCharsets.UTF_8))
-                .applyCommonHeaders(currentCookieHeader())
-                .applySignHeaders(signs)
-                .build(),
-            requireLoginCookie = requireLoginCookie,
-        )
+        return send(request.build(), requireLoginCookie = requireLoginCookie)
     }
 
     private suspend fun send(
@@ -299,9 +345,11 @@ internal class RednoteClient(
         if (requireLoginCookie) {
             requireCookieConfigured()
         }
-        return withContext(Dispatchers.IO) {
+        val response = withContext(Dispatchers.IO) {
             httpClient.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8))
         }
+        mergeResponseCookies(response)
+        return response
     }
 
     private fun requireJsonBody(
@@ -341,28 +389,20 @@ internal class RednoteClient(
         }
     }
 
-    private fun ensureGuestCookies() {
-        val existing = parseRednoteCookieInput(currentCookieHeader()).pairs
-        if (existing.keys.any { it.equals("a1", ignoreCase = true) } &&
-            existing.keys.any { it.equals("webId", ignoreCase = true) }
-        ) {
-            return
-        }
+    private fun beginGuestQrSession() {
+        includeConfigCookie = false
+        sessionCookies.clear()
+        clearCookieStore()
         val guest = generateRednoteGuestIdentity()
-        val next = linkedMapOf<String, String>()
-        existing.forEach { (name, value) -> next[name] = value }
-        if (!next.keys.any { it.equals("a1", ignoreCase = true) }) {
-            next["a1"] = guest.a1
-        }
-        if (!next.keys.any { it.equals("webId", ignoreCase = true) }) {
-            next["webId"] = guest.webId
-        }
-        putCookies(next)
+        putCookies(linkedMapOf("a1" to guest.a1, "webId" to guest.webId))
     }
 
     private fun putCookies(pairs: Map<String, String>) {
+        val canonical = canonicalizeRednoteCookies(pairs)
+        if (canonical.isEmpty()) return
+        sessionCookies.putAll(canonical)
         val cookieManager = httpClient.cookieHandler().orElse(null) as? CookieManager ?: return
-        pairs.forEach { (name, value) ->
+        canonical.forEach { (name, value) ->
             if (name.isBlank()) return@forEach
             val parsed = HttpCookie(name, value).apply {
                 domain = ".xiaohongshu.com"
@@ -372,6 +412,21 @@ internal class RednoteClient(
         }
     }
 
+    private fun mergeResponseCookies(response: HttpResponse<*>) {
+        val values = LinkedHashMap<String, String>()
+        response.headers().allValues("Set-Cookie").forEach { raw ->
+            values.putAll(parseRednoteCookieInput(raw).pairs)
+        }
+        if (values.isNotEmpty()) {
+            putCookies(values)
+        }
+    }
+
+    private fun clearCookieStore() {
+        val cookieManager = httpClient.cookieHandler().orElse(null) as? CookieManager ?: return
+        cookieManager.cookieStore.removeAll()
+    }
+
     private fun cookieValue(name: String): String? {
         return parseRednoteCookieInput(currentCookieHeader()).pairs.entries
             .firstOrNull { it.key.equals(name, ignoreCase = true) }
@@ -379,7 +434,12 @@ internal class RednoteClient(
     }
 
     private fun currentCookieHeader(): String {
-        return mergeRednoteCookieHeaders(config.cookie, cookieStoreHeader())
+        val configCookie = if (includeConfigCookie) config.cookie else null
+        return mergeRednoteCookieHeaders(
+            configCookie,
+            RednoteCookieSet(sessionCookies).header,
+            cookieStoreHeader(),
+        )
     }
 
     private fun cookieStoreHeader(): String {
@@ -414,13 +474,24 @@ internal class RednoteClient(
 
 private fun HttpRequest.Builder.applyCommonHeaders(cookieHeader: String): HttpRequest.Builder {
     header("Accept", "application/json, text/plain, */*")
-    header("Accept-Language", "zh-CN,zh;q=0.9")
+    header("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
     header("User-Agent", DESKTOP_USER_AGENT)
     header("Origin", REDNOTE_HOME)
     header("Referer", "$REDNOTE_HOME/")
+    header("sec-ch-ua", SEC_CH_UA)
+    header("sec-ch-ua-mobile", "?0")
+    header("sec-ch-ua-platform", "\"Windows\"")
+    header("sec-fetch-dest", "empty")
+    header("sec-fetch-mode", "cors")
+    header("sec-fetch-site", "same-site")
     if (cookieHeader.isNotBlank()) {
         header("Cookie", cookieHeader)
     }
+    return this
+}
+
+private fun HttpRequest.Builder.applyExtraHeaders(headers: Map<String, String>): HttpRequest.Builder {
+    headers.forEach { (name, value) -> header(name, value) }
     return this
 }
 
@@ -437,15 +508,8 @@ private fun HttpRequest.Builder.applySignHeaders(signs: RednoteWebSignHeaders): 
 
 internal const val DESKTOP_USER_AGENT: String =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36 Edg/149.0.0.0"
-
-private fun uriWithQuery(base: URI, params: Map<String, String>): URI {
-    val encoded = params.entries.joinToString("&") { (key, value) ->
-        "${URLEncoder.encode(key, StandardCharsets.UTF_8)}=${URLEncoder.encode(value, StandardCharsets.UTF_8)}"
-    }
-    val raw = base.toString()
-    val joiner = if (raw.contains('?')) "&" else "?"
-    return URI.create("$raw$joiner$encoded")
-}
+private const val SEC_CH_UA: String =
+    "\"Not:A-Brand\";v=\"99\", \"Microsoft Edge\";v=\"149\", \"Chromium\";v=\"149\""
 
 /**
  * Attach the already-signed query from [contentString] onto [base] without re-encoding,

@@ -294,6 +294,13 @@ internal class RednotePublisherRuntime() :
         if (cookies.isEmpty()) {
             return PublisherLoginResult(PublisherLoginStatus.FAILED, "小红书 Cookie 不能为空")
         }
+        val missing = cookies.missingRequiredLoginCookies()
+        if (missing.isNotEmpty()) {
+            return PublisherLoginResult(
+                status = PublisherLoginStatus.FAILED,
+                message = missingRequiredLoginCookieMessage(missing),
+            )
+        }
 
         val previous = currentConfig()
         val next = previous.copy(cookie = cookies.header)

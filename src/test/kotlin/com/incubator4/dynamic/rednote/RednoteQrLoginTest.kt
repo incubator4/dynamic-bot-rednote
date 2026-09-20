@@ -155,8 +155,23 @@ class RednoteQrLoginTest {
         )
         assertEquals(RednoteQrCodeStatus.SUCCESS, success.resolveStatus())
         assertEquals(
-            mapOf("web_session" to "sess-1", "secure_session" to "secure-1"),
+            mapOf("web_session" to "sess-1", "web_session_sec" to "secure-1"),
             success.loginInfo?.toCookiePairs(),
+        )
+
+        val userinfo = parseRednoteQrStatus(
+            """{"code":0,"success":true,"data":{"codeStatus":2,"userId":"u-9"}}""",
+        )
+        assertEquals(RednoteQrCodeStatus.SUCCESS, userinfo.resolveStatus())
+        assertEquals("u-9", userinfo.confirmedUserId())
+
+        val activate = parseRednoteActivateSession(
+            """{"code":0,"success":true,"data":{"session":"guest-sess","secure_session":"guest-sec","user_id":"guest"}}""",
+        )
+        assertEquals("guest-sess", activate.session)
+        assertEquals(
+            mapOf("web_session" to "guest-sess", "web_session_sec" to "guest-sec"),
+            activate.toCookiePairs(),
         )
     }
 
@@ -190,6 +205,9 @@ class RednoteQrLoginTest {
             },
             pollStatus = { _, _ -> statuses.removeAt(0) },
             applyLoginInfo = { info -> info.session?.let(applied::add) },
+            completeLogin = { _, _, userId ->
+                RednoteQrLoginInfo(session = "sess", userId = userId)
+            },
             verifyLogin = {
                 PublisherLoginResult(
                     status = PublisherLoginStatus.SUCCESS,
@@ -239,6 +257,44 @@ class RednoteQrLoginTest {
     }
 
     @Test
+    fun `qr login runner ignores transient poll errors then completes`() = runBlocking {
+        var polls = 0
+        val applied = mutableListOf<String>()
+        var clock = 0L
+        val result = runRednoteQrLogin(
+            onQrCode = {},
+            onStatusChanged = {},
+            createChallenge = {
+                RednoteQrCodeChallenge(
+                    qrId = "qr-retry",
+                    code = "code-retry",
+                    url = "https://www.xiaohongshu.com/mobile/login?qrId=qr-retry",
+                    expiresAtEpochSeconds = 2_000,
+                )
+            },
+            pollStatus = { _, _ ->
+                polls += 1
+                if (polls == 1) error("temporary")
+                RednoteQrStatusSnapshot(code = 0, success = true, codeStatus = 2, userId = "u1")
+            },
+            applyLoginInfo = { info -> info.session?.let(applied::add) },
+            completeLogin = { _, _, userId ->
+                RednoteQrLoginInfo(session = "real", secureSession = "sec", userId = userId)
+            },
+            verifyLogin = {
+                PublisherLoginResult(PublisherLoginStatus.SUCCESS, "小红书登录状态可用")
+            },
+            pollIntervalMs = 1_000,
+            timeoutMs = 10_000,
+            delayMillis = { clock += it },
+            nowMillis = { clock },
+        )
+        assertEquals(PublisherLoginStatus.SUCCESS, result.status)
+        assertEquals(listOf("real"), applied)
+        assertEquals(2, polls)
+    }
+
+    @Test
     fun `qr login runner reports failed when session verify fails`() = runBlocking {
         val updates = mutableListOf<PublisherLoginResult>()
         val result = runRednoteQrLogin(
@@ -261,6 +317,9 @@ class RednoteQrLoginTest {
                 )
             },
             applyLoginInfo = {},
+            completeLogin = { _, _, userId ->
+                RednoteQrLoginInfo(session = "bad", userId = userId)
+            },
             verifyLogin = {
                 PublisherLoginResult(PublisherLoginStatus.FAILED, "游客会话")
             },

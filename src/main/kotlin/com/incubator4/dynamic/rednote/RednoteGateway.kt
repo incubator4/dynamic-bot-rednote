@@ -135,6 +135,9 @@ internal class RednoteHttpGateway(
                 pollStatus = { qrId, code -> client.pollQrLoginStatus(qrId, code) },
                 applyLoginInfo = client::applyQrLoginInfo,
                 verifyLogin = { client.checkLoginState() },
+                completeLogin = { qrId, code, confirmedUserId ->
+                    client.completeQrLogin(qrId, code, confirmedUserId)
+                },
                 pollIntervalMs = pollIntervalMs,
                 timeoutMs = timeoutMs,
             )
