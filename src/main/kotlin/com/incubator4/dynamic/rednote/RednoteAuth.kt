@@ -25,6 +25,7 @@ internal const val REDNOTE_USER_ME_URL: String = "https://edith.xiaohongshu.com$
 internal const val REDNOTE_USER_OTHERINFO_URL: String = "https://edith.xiaohongshu.com$REDNOTE_USER_OTHERINFO_URI"
 internal const val REDNOTE_USER_POSTED_URL: String = "https://edith.xiaohongshu.com$REDNOTE_USER_POSTED_URI"
 internal const val REDNOTE_FEED_URL: String = "https://edith.xiaohongshu.com$REDNOTE_FEED_URI"
+internal const val REDNOTE_FEED_RAP_API: String = "//edith.xiaohongshu.com$REDNOTE_FEED_URI"
 internal const val REDNOTE_LIVE_HOME: String = "$REDNOTE_HOME/livestream"
 internal const val REDNOTE_DEFAULT_AVATAR: String = "https://www.xiaohongshu.com/favicon.ico"
 

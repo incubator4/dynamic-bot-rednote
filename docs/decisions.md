@@ -132,7 +132,7 @@ Cookie 登录与登录失效暂停轮询仍按 ADR-0004 / ADR-0005 保留。
 
 ## ADR-0011: 数据接口使用 XYW_ 请求签名
 
-- Status: Accepted
+- Status: Superseded by ADR-0012
 - Date: 2026-09-20
 - Related: [Cloxl/xhshow#104](https://github.com/Cloxl/xhshow/issues/104)、[PR #105](https://github.com/Cloxl/xhshow/pull/105)
 
@@ -146,4 +146,22 @@ Cookie 登录与登录失效暂停轮询仍按 ADR-0004 / ADR-0005 保留。
 | 非数据接口 | 二维码 create/status 继续用既有 legacy 签名，不切换 XYW_ |
 | 失败 | HTTP 406 仍按现有路径报中文错误并暂停重试，不加密绕过 |
 
-不做：完整移植 xhshow 的 `XYS_` / `x-rap-param` / 设备指纹 `b1` 流水线；搜索等未立项接口。
+原“不做：完整移植 xhshow 的 `XYS_` / `x-rap-param` / 设备指纹 `b1` 流水线”已被 ADR-0012 取代：仅 `feed` 等风控接口补齐 `x-rap-param`，`X-s-common` 对齐 xhshow 新模板并接入 `b1` 指纹，`XYS_` 与搜索接口仍不实现。
+
+## ADR-0012: 对齐 xhshow 的 X-S-Common 模板、b1 指纹与 x-rap-param
+
+- Status: Accepted
+- Date: 2026-09-20
+- Related: ADR-0011、[Cloxl/xhshow](https://github.com/Cloxl/xhshow)（`core/xrap.py`、`generators/fingerprint.py`、`utils/hash.py`）
+
+ADR-0011 只补了 `X-s=XYW_…`，实测 `user_posted` / `otherinfo` / `feed` 仍返回 HTTP 406。根因是服务端还校验 `X-S-Common` 模板版本、设备指纹 `b1`、链路追踪头，以及 `feed` 等风控接口的 `x-rap-param`。本 ADR 在不扩大产品范围的前提下补齐这些头。
+
+| 项 | 约定 |
+| --- | --- |
+| `X-S-Common` | 对齐 xhshow 新模板：`x1=4.3.5`、`x4=4.86.0`、`x6/x7` 留空、`x8=b1`、`x9=crc32_js(b1)`、`x10=0`、`x11=normal`；`x5` 仍为 cookie `a1`。编码用自定义 base64（`customBase64Encode`）。 |
+| `b1` 指纹 | 新增 `RednoteFingerprint`：采样一份稳定的 PC 浏览器指纹子集，ARC4（密钥 `xhswebmplfbt`）加密后按 xhshow 的 latin1+quote+base64 路径编码。仅覆盖 `generate_b1` 实际消费的字段，不完整复刻全量指纹。 |
+| 追踪/分片头 | 所有 XYW_ 请求额外带 `x-b3-traceid`（16 hex）、`x-xray-traceid`（32 hex，前 16 位编码时间戳+序号）、`x-mns=unload`、`xy-direction`（有 `userId` 时用 MurmurHash3 分片，否则随机 10..100）。 |
+| `x-rap-param` | 新增 `RednoteXrap` + `RednoteXrapCipher`：TLV body → gzip（OS 字节改 `0x03`）→ 异或 → SM4 变种 ECB → 36 字节信封 + base64。`feed` POST 带 `x-rap-param`，`api` 用 `//edith.xiaohongshu.com/api/sns/web/v1/feed`。SM4 轮密钥/S-box/xxh32 均按 xhshow 纯 Python 实现移植。 |
+| 接入点 | `RednoteClient.sendXywSignedGet/Post` 统一应用上述头；`enrichNote` 调用 feed 时传 `xRapApi`。`fetchPublisherSnapshot` / `fetchUserNotes` / `fetchLiveSnapshot` 把目标 `userId` 透传给签名，用于 `xy-direction` 分片。 |
+| 仍不做 | `XYS_` 旧签名、搜索/关注/视频下载等未立项接口；不绕过登录态或风控校验，406 仍按既有路径报中文错误并暂停。 |
+| 风险 | `b1` 为简化指纹，若服务端后续强校验完整指纹可能再次 406；届时再按 xhshow 全量字段补齐。 |

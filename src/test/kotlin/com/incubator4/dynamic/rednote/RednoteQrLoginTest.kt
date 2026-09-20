@@ -10,26 +10,72 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
+private val CUSTOM_B64_ALPHABET: String =
+    "ZmserbBoHQtNP+wO" +
+        "cza/LpngG8yJq42K" +
+        "WYj0DSfdikx3VT16" +
+        "IlUAFM97hECvuRX5"
+
+private fun decodeCustomBase64(value: String): String {
+    val index = HashMap<Char, Int>(64)
+    for (i in CUSTOM_B64_ALPHABET.indices) index[CUSTOM_B64_ALPHABET[i]] = i
+    val clean = value.filterNot { it == '\n' || it == '\r' }
+    val out = ArrayList<Int>(clean.length * 3 / 4)
+    var buffer = 0
+    var bits = 0
+    for (ch in clean) {
+        if (ch == '=') break
+        val v = index[ch] ?: error("unknown base64 char: $ch")
+        buffer = (buffer shl 6) or v
+        bits += 6
+        if (bits >= 8) {
+            bits -= 8
+            out.add((buffer shr bits) and 0xFF)
+        }
+    }
+    val bytes = out.map { it.toByte() }.toByteArray()
+    return String(bytes, Charsets.UTF_8)
+}
+
 class RednoteQrLoginTest {
     @Test
     fun `web sign matches known vectors`() {
+        val fixedB1 = "test-b1-fp"
         val create = buildRednoteWebSign(
             uri = REDNOTE_QR_CREATE_URI,
             jsonBody = "{}",
             a1 = "abc123",
+            b1 = fixedB1,
             epochMillis = 1_729_214_251_341L,
         )
         assertEquals("OgMC1BTl0g4BZ21Wsg1i1gqBsgTlOjvGsjdk0jT+sBs3", create.xS)
         assertEquals("1729214251341", create.xT)
-        assertEquals(
-            "2UQAPsHC+aIjqArjwjHjNsQhPsHCH0rjNsQhPaHCH0P1PjhIHjIj2eHjwjQgynEDJ74AHjIj2ePjwjQhyoPTqBPT49pjHjIj2ecjwjHUN0P1PaHVHdWMH0ijGnQ0P/HAHjIj2eGjwjHl+AHEP0rFP0LlPAclHjIj2eqjwjQO8FMePLQLJemd+rQyP0bgq9qly/bdqLQA8MzV/9k9z7+x8BVIySc3qFQAPUHVHdWhH0ijHjIj2eDjwjFl+APlP0PI+eP7NsQhP/Zjw0bR",
-            create.xSCommon,
-        )
+        // x-s-common now follows the xhshow template (x1=4.3.5, x4=4.86.0, x6/x7 empty,
+        // x8=b1, x9=crc32_js(b1), x10=0, x11=normal) and binds the supplied b1, so we
+        // decode the custom base64 and assert the structural fields rather than a
+        // brittle full-string vector.
+        val commonJson = decodeCustomBase64(create.xSCommon)
+        assertTrue(commonJson.contains("\"x1\":\"4.3.5\""), commonJson)
+        assertTrue(commonJson.contains("\"x4\":\"4.86.0\""), commonJson)
+        assertTrue(commonJson.contains("\"x5\":\"abc123\""), commonJson)
+        assertTrue(commonJson.contains("\"x6\":\"\""), commonJson)
+        assertTrue(commonJson.contains("\"x7\":\"\""), commonJson)
+        assertTrue(commonJson.contains("\"x8\":\"$fixedB1\""), commonJson)
+        assertTrue(commonJson.contains("\"x9\":${crc32JsSignedInt(fixedB1)}"), commonJson)
+        assertTrue(commonJson.contains("\"x10\":0"), commonJson)
+        assertTrue(commonJson.contains("\"x11\":\"normal\""), commonJson)
+        // New risk-control / tracing headers are populated and well-formed.
+        assertEquals(16, create.xB3TraceId.length)
+        assertEquals(32, create.xXrayTraceId.length)
+        assertTrue(create.xXrayTraceId.all { it in '0'..'9' || it in 'a'..'f' })
+        assertEquals("unload", create.xMns)
+        assertTrue(create.xyDirection.toIntOrNull() != null)
 
         val status = buildRednoteWebSign(
             uri = "$REDNOTE_QR_STATUS_URI?qr_id=1&code=2",
             jsonBody = null,
             a1 = "abc123",
+            b1 = fixedB1,
             epochMillis = 1_729_214_251_341L,
         )
         assertEquals("1lZUZYq6sgsKsgFKOBMbOiTCOB5C0jO61gFb025ps653", status.xS)

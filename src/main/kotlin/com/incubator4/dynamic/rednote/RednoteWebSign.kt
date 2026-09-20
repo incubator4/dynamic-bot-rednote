@@ -23,6 +23,10 @@ internal data class RednoteWebSignHeaders(
     val xS: String,
     val xT: String,
     val xSCommon: String,
+    val xB3TraceId: String,
+    val xXrayTraceId: String,
+    val xMns: String = "unload",
+    val xyDirection: String,
 )
 
 internal data class RednoteGuestIdentity(
@@ -50,17 +54,23 @@ internal fun buildRednoteWebSign(
     jsonBody: String? = null,
     a1: String = "",
     b1: String = "",
+    userId: String? = null,
     epochMillis: Long = System.currentTimeMillis(),
+    random: kotlin.random.Random = kotlin.random.Random.Default,
 ): RednoteWebSignHeaders {
     val xT = epochMillis.toString()
     val payload = jsonBody.orEmpty()
     val raw = "${xT}test${uri}${payload}"
     val md5 = md5Hex(raw)
     val xS = encodeXs(md5)
+    val effectiveB1 = b1.ifBlank { RednoteFingerprint.generateB1(random, epochMillis) }
     return RednoteWebSignHeaders(
         xS = xS,
         xT = xT,
-        xSCommon = buildXsCommon(a1 = a1, b1 = b1, xT = xT, xS = xS),
+        xSCommon = buildXsCommon(a1 = a1, b1 = effectiveB1),
+        xB3TraceId = generateB3TraceId(random),
+        xXrayTraceId = generateXrayTraceId(epochMillis, random),
+        xyDirection = shardingKey(userId, random).toString(),
     )
 }
 
@@ -76,7 +86,9 @@ internal fun buildRednoteXywSign(
     a1: String,
     b1: String = "",
     appId: String = XYW_APP_ID,
+    userId: String? = null,
     epochMillis: Long = System.currentTimeMillis(),
+    random: kotlin.random.Random = kotlin.random.Random.Default,
 ): RednoteWebSignHeaders {
     val xT = epochMillis.toString()
     val xS = signXyw(
@@ -85,10 +97,14 @@ internal fun buildRednoteXywSign(
         timestampMs = xT,
         appId = appId,
     )
+    val effectiveB1 = b1.ifBlank { RednoteFingerprint.generateB1(random, epochMillis) }
     return RednoteWebSignHeaders(
         xS = xS,
         xT = xT,
-        xSCommon = buildXsCommon(a1 = a1, b1 = b1, xT = xT, xS = xS),
+        xSCommon = buildXsCommon(a1 = a1, b1 = effectiveB1),
+        xB3TraceId = generateB3TraceId(random),
+        xXrayTraceId = generateXrayTraceId(epochMillis, random),
+        xyDirection = shardingKey(userId, random).toString(),
     )
 }
 
@@ -178,29 +194,35 @@ internal fun buildXywPayloadHex(
     }.lowercase(Locale.ROOT)
 }
 
+/**
+ * `x-s-common` header, aligned with xhshow `XsCommonSigner`.
+ *
+ * Unlike the legacy ReaJason/xhs layout, xhshow leaves `x6`/`x7` empty and
+ * derives `x9` from `CRC32.js(b1)` instead of `mrc(xT+xS)`. Version fields
+ * track the current xhs-pc-web build (`x1=4.3.5`, `x4=4.86.0`).
+ */
 private fun buildXsCommon(
     a1: String,
     b1: String,
-    xT: String,
-    xS: String,
 ): String {
-    val common = buildString {
-        append('{')
-        append("\"s0\":5,")
-        append("\"s1\":\"\",")
-        append("\"x0\":\"1\",")
-        append("\"x1\":\"3.2.0\",")
-        append("\"x2\":\"Windows\",")
-        append("\"x3\":\"xhs-pc-web\",")
-        append("\"x4\":\"2.3.1\",")
-        append("\"x5\":\"").append(escapeJson(a1)).append("\",")
-        append("\"x6\":\"").append(escapeJson(xT)).append("\",")
-        append("\"x7\":\"").append(escapeJson(xS)).append("\",")
-        append("\"x8\":\"").append(escapeJson(b1)).append("\",")
-        append("\"x9\":").append(mrc(xT + xS)).append(',')
-        append("\"x10\":1")
-        append('}')
-    }
+    val common = compactJsonObject(
+        linkedMapOf(
+            "s0" to 5,
+            "s1" to "",
+            "x0" to "1",
+            "x1" to "4.3.5",
+            "x2" to "Windows",
+            "x3" to "xhs-pc-web",
+            "x4" to "4.86.0",
+            "x5" to a1,
+            "x6" to "",
+            "x7" to "",
+            "x8" to b1,
+            "x9" to crc32JsSignedInt(b1),
+            "x10" to 0,
+            "x11" to "normal",
+        ),
+    )
     return customBase64Encode(encodeUtf8(common))
 }
 
@@ -290,7 +312,7 @@ private fun encodeUtf8(value: String): IntArray {
         .toIntArray()
 }
 
-private fun customBase64Encode(bytes: IntArray): String {
+internal fun customBase64Encode(bytes: IntArray): String {
     val lookup = CUSTOM_B64
     val length = bytes.size
     val remainder = length % 3
@@ -329,15 +351,6 @@ private fun encodeChunk(bytes: IntArray, start: Int, end: Int, lookup: List<Stri
     return out.toString()
 }
 
-private fun mrc(input: String): Int {
-    var o = -1
-    for (n in 0 until 57) {
-        val mixed = (o and 255) xor input[n].code
-        o = MRC_TABLE[mixed] xor (o ushr 8)
-    }
-    return o xor -1 xor -306674912
-}
-
 private val CUSTOM_B64: List<String> = listOf(
     "Z", "m", "s", "e", "r", "b", "B", "o", "H", "Q", "t", "N", "P", "+", "w", "O",
     "c", "z", "a", "/", "L", "p", "n", "g", "G", "8", "y", "J", "q", "4", "2", "K",
@@ -345,48 +358,108 @@ private val CUSTOM_B64: List<String> = listOf(
     "I", "l", "U", "A", "F", "M", "9", "7", "h", "E", "C", "v", "u", "R", "X", "5",
 )
 
-private val MRC_TABLE: IntArray = intArrayOf(
-    0, 1996959894, -301047508, -1727442502, 124634137, 1886057615,
-    -379345611, -1637575261, 249268274, 2044508324, -522852066, -1747789432,
-    162941995, 2125561021, -407360249, -1866523247, 498536548, 1789927666,
-    -205950648, -2067906082, 450548861, 1843258603, -187386543, -2083289657,
-    325883990, 1684777152, -43845254, -1973040660, 335633487, 1661365465,
-    -99664541, -1928851979, 997073096, 1281953886, -715111964, -1570279054,
-    1006888145, 1258607687, -770865667, -1526024853, 901097722, 1119000684,
-    -608450090, -1396901568, 853044451, 1172266101, -589951537, -1412350631,
-    651767980, 1373503546, -925412992, -1076862698, 565507253, 1454621731,
-    -809855591, -1195530993, 671266974, 1594198024, -972236366, -1324619484,
-    795835527, 1483230225, -1050600021, -1234817731, 1994146192, 31158534,
-    -1731059524, -271249366, 1907459465, 112637215, -1614814043, -390540237,
-    2013776290, 251722036, -1777751922, -519137256, 2137656763, 141376813,
-    -1855689577, -429695999, 1802195444, 476864866, -2056965928, -228458418,
-    1812370925, 453092731, -2113342271, -183516073, 1706088902, 314042704,
-    -1950435094, -54949764, 1658658271, 366619977, -1932296973, -69972891,
-    1303535960, 984961486, -1547960204, -725929758, 1256170817, 1037604311,
-    -1529756563, -740887301, 1131014506, 879679996, -1385723834, -631195440,
-    1141124467, 855842277, -1442165665, -586318647, 1342533948, 654459306,
-    -1106571248, -921952122, 1466479909, 544179635, -1184443383, -832445281,
-    1591671054, 702138776, -1328506846, -942167884, 1504918807, 783551873,
-    -1212326853, -1061524307, -306674912, -1698712650, 62317068, 1957810842,
-    -355121351, -1647151185, 81470997, 1943803523, -480048366, -1805370492,
-    225274430, 2053790376, -468791541, -1828061283, 167816743, 2097651377,
-    -267414716, -2029476910, 503444072, 1762050814, -144550051, -2140837941,
-    426522225, 1852507879, -19653770, -1982649376, 282753626, 1742555852,
-    -105259153, -1900089351, 397917763, 1622183637, -690576408, -1580100738,
-    953729732, 1340076626, -776247311, -1497606297, 1068828381, 1219638859,
-    -670225446, -1358292148, 906185462, 1090812512, -547295293, -1469587627,
-    829329135, 1181335161, -882789492, -1134132454, 628085408, 1382605366,
-    -871598187, -1156888829, 570562233, 1426400815, -977650754, -1296233688,
-    733239954, 1555261956, -1026031705, -1244606671, 752459403, 1541320221,
-    -1687895376, -328994266, 1969922972, 40735498, -1677130071, -351390145,
-    1913087877, 83908371, -1782625662, -491226604, 2075208622, 213261112,
-    -1831694693, -438977011, 2094854071, 198958881, -2032938284, -237706686,
-    1759359992, 534414190, -2118248755, -155638181, 1873836001, 414664567,
-    -2012718362, -15766928, 1711684554, 285281116, -1889165569, -127750551,
-    1634467795, 376229701, -1609899400, -686959890, 1308918612, 956543938,
-    -1486412191, -799009033, 1231636301, 1047427035, -1362007478, -640263460,
-    1088359270, 936918000, -1447252397, -558129467, 1202900863, 817233897,
-    -1111625188, -893730166, 1404277552, 615818150, -1160759803, -841546093,
-    1423857449, 601450431, -1285129682, -1000256840, 1567103746, 711928724,
-    -1274298825, -1022587231, 1510334235, 755167117,
-)
+private val HEX_LOWER: CharArray = "0123456789abcdef".toCharArray()
+
+/**
+ * JavaScript-style CRC32, matching xhshow `CRC32.crc32_js_int`:
+ * `(-1 ^ c ^ 0xEDB88320) >>> 0` then interpreted as a signed 32-bit int.
+ * String input uses the lower 8 bits of each char code point (JS `charCodeAt`).
+ */
+internal fun crc32JsSignedInt(data: String): Int {
+    val table = CRC32_TABLE
+    var c = -1
+    for (ch in data) {
+        val b = ch.code and 0xFF
+        c = table[(c and 0xFF) xor b] xor (c shr 8)
+    }
+    // (-1 ^ c ^ 0xEDB88320) >>> 0; Kotlin Int is already a signed 32-bit value,
+    // so the unsigned-to-signed conversion Python performs is implicit here.
+    return c.inv() xor 0xEDB88320.toInt()
+}
+
+private val CRC32_TABLE: IntArray = IntArray(256) { d ->
+    var r = d
+    repeat(8) {
+        r = if ((r and 1) != 0) (r shr 1) xor 0xEDB88320.toInt() else r shr 1
+    }
+    r
+}
+
+/**
+ * `x-b3-traceid`: 16 random lowercase hex characters (xhshow `generate_b3_trace_id`).
+ */
+internal fun generateB3TraceId(random: kotlin.random.Random = kotlin.random.Random.Default): String {
+    val sb = StringBuilder(16)
+    repeat(16) { sb.append(HEX_LOWER[random.nextInt(16)]) }
+    return sb.toString()
+}
+
+/**
+ * `x-xray-traceid`: 32 hex characters. First 16 encode `(timestampMs << 23) | seq`,
+ * last 16 are random (xhshow `generate_xray_trace_id`).
+ */
+internal fun generateXrayTraceId(
+    timestampMs: Long,
+    random: kotlin.random.Random = kotlin.random.Random.Default,
+): String {
+    val seq = random.nextInt(0, 1 shl 23)
+    val shifted = (timestampMs.toLong() shl 23) or seq.toLong()
+    val part1 = String.format("%016x", shifted)
+    val sb = StringBuilder(16)
+    repeat(16) { sb.append(HEX_LOWER[random.nextInt(16)]) }
+    return part1 + sb.toString()
+}
+
+/**
+ * `xy-direction` sharding key, matching xhshow `get_sharding_key`:
+ * MurmurHash3 x86 32 of the user id, then `(r % 100) + 1`. When no user id is
+ * available, fall back to a random value in `10..100` (xhshow default).
+ */
+internal fun shardingKey(userId: String?, random: kotlin.random.Random = kotlin.random.Random.Default): Int {
+    if (userId.isNullOrBlank()) return random.nextInt(10, 101)
+    val data = userId.toByteArray(StandardCharsets.UTF_8)
+    val length = data.size
+    var r = 151488
+    val blocks = length / 4
+    for (o in 0 until blocks) {
+        val i = 4 * o
+        var u = (data[i].toInt() and 0xFF) or
+            ((data[i + 1].toInt() and 0xFF) shl 8) or
+            ((data[i + 2].toInt() and 0xFF) shl 16) or
+            ((data[i + 3].toInt() and 0xFF) shl 24)
+        u = imul32(u, C1)
+        u = rotl32(u, 15)
+        u = imul32(u, C2)
+        r = r xor u
+        r = rotl32(r, 13)
+        r = imul32(r, 5) + -1640531527 // 0xE6546B64
+    }
+    val s = 4 * blocks
+    var c = 0
+    val rem = length % 4
+    if (rem >= 3) c = c xor ((data[s + 2].toInt() and 0xFF) shl 16)
+    if (rem >= 2) c = c xor ((data[s + 1].toInt() and 0xFF) shl 8)
+    if (rem >= 1) {
+        c = c xor (data[s].toInt() and 0xFF)
+        c = imul32(c, C1)
+        c = rotl32(c, 15)
+        c = imul32(c, C2)
+        r = r xor c
+    }
+    r = r xor length
+    r = r and 0xFFFFFFFF.toInt()
+    r = r xor (r ushr 16)
+    r = imul32(r, 0x85EBCA6B.toInt()) and 0xFFFFFFFF.toInt()
+    r = r xor (r ushr 13)
+    r = imul32(r, 0xC2B2AE35.toInt()) and 0xFFFFFFFF.toInt()
+    r = r xor (r ushr 16)
+    return (r and 0x7FFFFFFF) % 100 + 1
+}
+
+private const val C1: Int = -862048943 // 0xCC9E2D51
+private const val C2: Int = 461845907
+
+private fun imul32(a: Int, b: Int): Int = (a.toLong() * b.toLong()).toInt()
+
+private fun rotl32(x: Int, r: Int): Int = (x shl r) or (x ushr (32 - r))
+

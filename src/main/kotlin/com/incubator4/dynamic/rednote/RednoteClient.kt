@@ -96,6 +96,7 @@ internal class RednoteClient(
             absoluteBaseUri = userOtherInfoUri,
             apiPath = REDNOTE_USER_OTHERINFO_URI,
             params = linkedMapOf("target_user_id" to normalized),
+            userId = normalized,
         )
         val body = requireJsonBody(response, "小红书用户资料")
         return parseRednotePublisher(body)
@@ -113,6 +114,7 @@ internal class RednoteClient(
                 "user_id" to normalized,
                 "image_formats" to "jpg,webp,avif",
             ),
+            userId = normalized,
         )
         val body = requireJsonBody(response, "小红书用户笔记")
         return parseRednoteUserNotesPage(body, normalized)
@@ -140,6 +142,7 @@ internal class RednoteClient(
             absoluteUri = feedUri,
             apiPath = REDNOTE_FEED_URI,
             jsonBody = jsonBody,
+            xRapApi = REDNOTE_FEED_RAP_API,
         )
         val body = requireJsonBody(response, "小红书笔记详情")
         return parseRednoteNoteDetail(body, note)
@@ -152,6 +155,7 @@ internal class RednoteClient(
             absoluteBaseUri = userOtherInfoUri,
             apiPath = REDNOTE_USER_OTHERINFO_URI,
             params = linkedMapOf("target_user_id" to normalized),
+            userId = normalized,
         )
         val body = requireJsonBody(response, "小红书直播状态")
         return parseRednoteLiveSnapshot(body, normalized)
@@ -210,10 +214,11 @@ internal class RednoteClient(
         absoluteBaseUri: URI,
         apiPath: String,
         params: Map<String, String?>,
+        userId: String? = null,
     ): HttpResponse<String> {
         val contentString = buildRednoteGetContentString(apiPath, params)
         val a1 = cookieValue("a1").orEmpty()
-        val signs = buildRednoteXywSign(contentString = contentString, a1 = a1)
+        val signs = buildRednoteXywSign(contentString = contentString, a1 = a1, userId = userId)
         val absoluteUri = absoluteUriWithSignedQuery(absoluteBaseUri, contentString)
         return send(
             HttpRequest.newBuilder(absoluteUri)
@@ -230,20 +235,23 @@ internal class RednoteClient(
         absoluteUri: URI,
         apiPath: String,
         jsonBody: String,
+        userId: String? = null,
+        xRapApi: String? = null,
     ): HttpResponse<String> {
         val contentString = apiPath + jsonBody
         val a1 = cookieValue("a1").orEmpty()
-        val signs = buildRednoteXywSign(contentString = contentString, a1 = a1)
-        return send(
-            HttpRequest.newBuilder(absoluteUri)
-                .timeout(Duration.ofSeconds(15))
-                .header("Content-Type", "application/json;charset=UTF-8")
-                .POST(HttpRequest.BodyPublishers.ofString(jsonBody, StandardCharsets.UTF_8))
-                .applyCommonHeaders(currentCookieHeader())
-                .applySignHeaders(signs)
-                .build(),
-            requireLoginCookie = true,
-        )
+        val signs = buildRednoteXywSign(contentString = contentString, a1 = a1, userId = userId)
+        val request = HttpRequest.newBuilder(absoluteUri)
+            .timeout(Duration.ofSeconds(15))
+            .header("Content-Type", "application/json;charset=UTF-8")
+            .POST(HttpRequest.BodyPublishers.ofString(jsonBody, StandardCharsets.UTF_8))
+            .applyCommonHeaders(currentCookieHeader())
+            .applySignHeaders(signs)
+        // feed / search / publish endpoints require the x-rap-param risk-control header.
+        if (xRapApi != null) {
+            request.header("x-rap-param", RednoteXrap.build(api = xRapApi, bodyJson = jsonBody))
+        }
+        return send(request.build(), requireLoginCookie = true)
     }
 
     private suspend fun sendSignedGet(
@@ -420,10 +428,14 @@ private fun HttpRequest.Builder.applySignHeaders(signs: RednoteWebSignHeaders): 
     header("X-s", signs.xS)
     header("X-t", signs.xT)
     header("X-S-Common", signs.xSCommon)
+    header("x-b3-traceid", signs.xB3TraceId)
+    header("x-xray-traceid", signs.xXrayTraceId)
+    header("x-mns", signs.xMns)
+    header("xy-direction", signs.xyDirection)
     return this
 }
 
-private const val DESKTOP_USER_AGENT: String =
+internal const val DESKTOP_USER_AGENT: String =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36 Edg/149.0.0.0"
 
 private fun uriWithQuery(base: URI, params: Map<String, String>): URI {
